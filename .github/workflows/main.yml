@@ -1274,113 +1274,20 @@ jobs:
               console.log(`Page URL before login: ${page.url()}`);
               console.log(`Page title before login: ${await page.title()}`);
 
-              // ── ADVANCED MODAL / POPUP KILLER ──────────────────────────────
-              // Handles ALL Zedge consent modals: CCPA privacy, GDPR cookies, etc.
-              // Strategy: inject a persistent MutationObserver that auto-dismisses
-              // any consent/privacy overlay as soon as it appears on ANY page.
-              // ────────────────────────────────────────────────────────────────────
-
-              // 1) Inject persistent auto-dismisser into every future page load
-              await context.addInitScript(() => {
-                const MODAL_KILL_INTERVAL = 800; // ms between scans
-                const BUTTON_TEXTS = [
-                  "close", "accept", "accept all", "accept all cookies",
-                  "agree", "i agree", "ok", "got it", "continue",
-                  "do not share or sell my personal information",
-                  "reject all", "deny", "dismiss"
-                ];
-
-                function killModals() {
-                  // Strategy A: find buttons by visible text
-                  const allButtons = document.querySelectorAll(
-                    'button, a[role="button"], [role="button"], input[type="button"], input[type="submit"]'
-                  );
-                  for (const btn of allButtons) {
-                    const text = (btn.textContent || btn.value || "").trim().toLowerCase();
-                    // Prioritize "Close" and "Accept" buttons inside overlays/modals
-                    if (BUTTON_TEXTS.includes(text)) {
-                      const inOverlay = btn.closest(
-                        '[class*="modal"], [class*="overlay"], [class*="consent"], ' +
-                        '[class*="cookie"], [class*="privacy"], [class*="popup"], ' +
-                        '[class*="banner"], [class*="notice"], [class*="dialog"], ' +
-                        '[id*="consent"], [id*="cookie"], [id*="privacy"], ' +
-                        '[id*="modal"], [id*="popup"], [role="dialog"], [role="alertdialog"]'
-                      );
-                      if (inOverlay) {
-                        console.log(`[ModalKiller] Clicking "${text}" inside overlay`);
-                        btn.click();
-                        return true;
-                      }
-                    }
-                  }
-
-                  // Strategy B: look for common consent manager iframes and nuke them
-                  const iframes = document.querySelectorAll(
-                    'iframe[src*="consent"], iframe[src*="cookie"], iframe[src*="privacy"], ' +
-                    'iframe[id*="consent"], iframe[id*="cookie"]'
-                  );
-                  for (const iframe of iframes) {
-                    console.log(`[ModalKiller] Removing consent iframe: ${iframe.src || iframe.id}`);
-                    iframe.remove();
-                    return true;
-                  }
-
-                  // Strategy C: remove full-screen overlays that block interaction
-                  const overlays = document.querySelectorAll(
-                    '[class*="consent-overlay"], [class*="cookie-overlay"], ' +
-                    '[class*="privacy-overlay"], [class*="modal-backdrop"], ' +
-                    '[class*="consent-wall"], [id*="consent-overlay"]'
-                  );
-                  for (const overlay of overlays) {
-                    console.log(`[ModalKiller] Removing overlay: ${overlay.className || overlay.id}`);
-                    overlay.remove();
-                    // Also restore body scroll
-                    document.body.style.overflow = "";
-                    document.documentElement.style.overflow = "";
-                    return true;
-                  }
-
-                  return false;
-                }
-
-                // Run immediately and then on interval
-                killModals();
-                const _modalKillTimer = setInterval(() => {
-                  if (killModals()) {
-                    // Keep running in case more modals appear (Zedge sometimes chains them)
-                  }
-                }, MODAL_KILL_INTERVAL);
-
-                // Also observe DOM for new modal injections
-                const observer = new MutationObserver((mutations) => {
-                  for (const m of mutations) {
-                    for (const node of m.addedNodes) {
-                      if (node.nodeType === 1) {
-                        const cl = (node.className || "").toString().toLowerCase();
-                        const id = (node.id || "").toLowerCase();
-                        if (cl.match(/modal|overlay|consent|cookie|privacy|popup|banner/) ||
-                            id.match(/modal|overlay|consent|cookie|privacy|popup/)) {
-                          setTimeout(killModals, 300);
-                          return;
-                        }
-                      }
-                    }
-                  }
-                });
-                observer.observe(document.documentElement, { childList: true, subtree: true });
-              });
-
-              // 2) Immediate aggressive dismissal on the current page
-              console.log("Running aggressive modal/popup killer...");
+              // ── COMPREHENSIVE ONE-TIME PRE-LOGIN MODAL / POPUP KILLER ──────
+              // Runs ONLY on the initial Zedge page load before login.
+              // We check in a loop for up to 8 seconds to handle dynamic/delayed popups,
+              // then exit permanently. This ensures we never interfere with subsequent
+              // upload modals or automation dialogs during the actual run.
+              // ────────────────────────────────────────────────────────────────
+              console.log("Running pre-login modal/popup killer...");
               let modalDismissed = false;
+              const killerStart = Date.now();
+              const killerMaxWait = 8000; // 8 seconds max wait
 
-              // Try multiple button selectors in priority order
               const modalSelectors = [
-                // CCPA privacy modal — purple "Close" button (most common from screenshot)
                 'button:has-text("Close")',
-                // CCPA "Do not share" option
                 'button:has-text("Do not Share or Sell my Personal Information")',
-                // GDPR cookie consent
                 'button:has-text("Accept All Cookies")',
                 'button:has-text("Accept All")',
                 'button:has-text("Accept")',
@@ -1389,48 +1296,91 @@ jobs:
                 'button:has-text("OK")',
                 'button:has-text("Got it")',
                 'button:has-text("Dismiss")',
-                // Generic close buttons inside dialogs
                 '[role="dialog"] button:has-text("Close")',
                 '[role="alertdialog"] button:has-text("Close")',
               ];
 
-              for (const selector of modalSelectors) {
-                try {
-                  const btn = page.locator(selector).first();
-                  const visible = await btn.isVisible({ timeout: 500 }).catch(() => false);
-                  if (visible) {
-                    await btn.click({ timeout: 3000 });
-                    console.log(`✅ Modal dismissed via: ${selector}`);
-                    modalDismissed = true;
-                    await page.waitForTimeout(1000);
-                    break;
-                  }
-                } catch { /* try next selector */ }
-              }
+              while (Date.now() - killerStart < killerMaxWait) {
+                let clickedAny = false;
+                for (const selector of modalSelectors) {
+                  try {
+                    const btn = page.locator(selector).first();
+                    const visible = await btn.isVisible({ timeout: 200 }).catch(() => false);
+                    if (visible) {
+                      // Check if it's actually part of a privacy/consent overlay
+                      const isConsentOverlay = await btn.evaluate(el => {
+                        const inOverlay = el.closest(
+                          '[class*="modal"], [class*="overlay"], [class*="consent"], ' +
+                          '[class*="cookie"], [class*="privacy"], [class*="popup"], ' +
+                          '[class*="banner"], [class*="notice"], [class*="dialog"], ' +
+                          '[id*="consent"], [id*="cookie"], [id*="privacy"], ' +
+                          '[id*="modal"], [id*="popup"], [role="dialog"], [role="alertdialog"]'
+                        );
+                        return !!inOverlay;
+                      }).catch(() => false);
 
-              // Fallback: nuke modals via JavaScript if no button worked
-              if (!modalDismissed) {
+                      if (isConsentOverlay) {
+                        await btn.click({ timeout: 2000 });
+                        console.log(`✅ Modal dismissed via: ${selector}`);
+                        modalDismissed = true;
+                        clickedAny = true;
+                        break;
+                      }
+                    }
+                  } catch (e) { /* ignore and try next */ }
+                }
+
+                if (clickedAny) {
+                  await page.waitForTimeout(1000);
+                  break; // exit loop if modal was dismissed
+                }
+                
+                // Fallback check: look for iframe consent dialogs or overlays and remove them
                 const nuked = await page.evaluate(() => {
                   let killed = 0;
-                  // Remove any element that looks like a consent/privacy modal
-                  document.querySelectorAll(
+                  // Remove any element that looks like a consent/privacy overlay/modal
+                  const elements = document.querySelectorAll(
                     '[class*="consent"], [class*="cookie"], [class*="privacy"], ' +
                     '[class*="modal"]:not([data-hook]), [class*="popup"], ' +
                     '[id*="consent"], [id*="cookie"], [id*="privacy"]'
-                  ).forEach(el => {
-                    // Don't remove Zedge's own upload modals (they have data-hook)
+                  );
+                  elements.forEach(el => {
+                    // Don't remove Zedge's own upload elements which have data-hook
                     if (!el.querySelector('[data-hook]') && !el.closest('[data-hook]')) {
                       el.remove();
                       killed++;
                     }
                   });
-                  // Restore scrolling
-                  document.body.style.overflow = "";
-                  document.documentElement.style.overflow = "";
+
+                  // Nuke consent iframes
+                  const iframes = document.querySelectorAll(
+                    'iframe[src*="consent"], iframe[src*="cookie"], iframe[src*="privacy"], ' +
+                    'iframe[id*="consent"], iframe[id*="cookie"]'
+                  );
+                  iframes.forEach(iframe => {
+                    iframe.remove();
+                    killed++;
+                  });
+
+                  if (killed > 0) {
+                    document.body.style.overflow = "";
+                    document.documentElement.style.overflow = "";
+                  }
                   return killed;
-                });
-                if (nuked > 0) console.log(`✅ Force-removed ${nuked} overlay element(s) via JS`);
-                else console.log("No consent/privacy modal detected — proceeding.");
+                }).catch(() => 0);
+
+                if (nuked > 0) {
+                  console.log(`✅ Force-removed ${nuked} overlay element(s) via JS`);
+                  modalDismissed = true;
+                  await page.waitForTimeout(1000);
+                  break;
+                }
+
+                await page.waitForTimeout(500);
+              }
+
+              if (!modalDismissed) {
+                console.log("No consent/privacy modal detected — proceeding.");
               }
 
               await page.waitForTimeout(500);
