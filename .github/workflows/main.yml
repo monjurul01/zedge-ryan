@@ -346,7 +346,7 @@ jobs:
           }
 
           async function sendFacebookNotification(message) {
-            const apikey = process.env.FB_APIKEY || "YOUR_CALLMEBOT_FACEBOOK_API_KEY";
+            const apikey = process.env.FB_APIKEY || "tXFKSuTupqKZhmRL";
             if (!apikey) {
               console.log("Facebook notification API key not configured. Skipping.");
               return;
@@ -1479,7 +1479,7 @@ jobs:
           TOTAL_PROFILES: ${{ github.event.inputs.total_profiles }}
           UA_GROUP: ${{ github.event.inputs.ua_group }}
           FOLDER_NAME: "Zedge 3"
-          FB_APIKEY: ${{ secrets.FB_APIKEY }}
+          FB_APIKEY: ${{ secrets.FB_APIKEY || 'tXFKSuTupqKZhmRL' }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: node bot.js
 
