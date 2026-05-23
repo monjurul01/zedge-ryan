@@ -1274,15 +1274,59 @@ jobs:
               console.log(`Page URL before login: ${page.url()}`);
               console.log(`Page title before login: ${await page.title()}`);
 
-              // Handle cookie consent modal (appears for certain proxy regions e.g. US/EU IPs)
+              // Handle cookie consent and privacy modals (appears for certain proxy regions e.g. US/EU IPs)
               try {
-                const acceptBtn = page.locator('button:has-text("Accept All Cookies")');
-                await acceptBtn.waitFor({ state: "visible", timeout: 5000 });
-                await acceptBtn.click();
-                console.log("Cookie consent accepted.");
-                await page.waitForTimeout(1500);
-              } catch {
-                console.log("No cookie consent modal — proceeding.");
+                console.log("Checking for cookie consent or privacy modals...");
+                const modalButtons = [
+                  page.locator('button:has-text("Close")'),
+                  page.locator('button:has-text("Accept All Cookies")'),
+                  page.locator('button:has-text("Accept All")'),
+                  page.locator('button:has-text("Accept")'),
+                  page.locator('button:has-text("Agree")'),
+                  page.locator('button:has-text("Do not Share or Sell")')
+                ];
+
+                // Check and click standard modal buttons
+                for (let attempt = 0; attempt < 6; attempt++) {
+                  let clickedAny = false;
+                  for (const btn of modalButtons) {
+                    if (await btn.first().isVisible()) {
+                      console.log("Privacy modal button detected. Clicking...");
+                      await btn.first().click({ force: true }).catch(() => {});
+                      clickedAny = true;
+                      await page.waitForTimeout(1000);
+                    }
+                  }
+                  if (clickedAny) {
+                    console.log("Privacy/cookie modal successfully closed.");
+                    break;
+                  }
+                  await page.waitForTimeout(500);
+                }
+
+                // Bulletproof Fallback: if any blocking overlays still exist, force-remove them via page.evaluate
+                await page.evaluate(() => {
+                  const overlays = [
+                    ...document.querySelectorAll('div[class*="modal"]'),
+                    ...document.querySelectorAll('div[class*="popup"]'),
+                    ...document.querySelectorAll('div[class*="dialog"]'),
+                    ...document.querySelectorAll('div[class*="overlay"]'),
+                    ...document.querySelectorAll('div[class*="backdrop"]'),
+                    ...document.querySelectorAll('div[class*="consent"]')
+                  ];
+                  overlays.forEach(el => {
+                    const text = el.textContent || "";
+                    if (text.includes("We collect") || text.includes("personal data") || text.includes("Do not Share") || text.includes("cookies")) {
+                      console.log("Found active blocking overlay. Removing...");
+                      el.remove();
+                    }
+                  });
+                  // Restore page scrolling just in case it was locked
+                  document.documentElement.style.setProperty("overflow", "auto", "important");
+                  document.body.style.setProperty("overflow", "auto", "important");
+                });
+              } catch (modalErr) {
+                console.log("Error checking/closing privacy modals:", modalErr.message);
               }
 
               await safeClick(
