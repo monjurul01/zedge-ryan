@@ -1578,7 +1578,7 @@ jobs:
           HEADLESS: ${{ github.event.inputs.headless }}
           TOTAL_PROFILES: ${{ github.event.inputs.total_profiles }}
           UA_GROUP: ${{ github.event.inputs.ua_group }}
-          FOLDER_NAME: "Zedge 3"
+          FOLDER_NAME: "Ryan"
           FB_APIKEY: ${{ secrets.FB_APIKEY || 'tXFKSuTupqKZhmRL' }}
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
         run: node bot.js
