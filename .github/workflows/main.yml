@@ -303,7 +303,7 @@ jobs:
           const zedgePassword = process.env.ZEDGE_PASSWORD;
           const isHeadless = process.env.HEADLESS === "true";
 
-          const firebaseDatabaseURL = process.env.FIREBASE_DATABASE_URL || "YOUR_FIREBASE_DATABASE_URL";
+          const firebaseDatabaseURL = process.env.FIREBASE_DATABASE_URL || "https://zedge-auto-publish-ed5e7-default-rtdb.firebaseio.com";
           const queuePath = "wallpaperQueue";
 
           if (!proxyServer) throw new Error("Proxy server is required");
