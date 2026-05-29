@@ -585,6 +585,21 @@ jobs:
             return false;
           }
 
+          function startModalWatcher(page, intervalMs = 1000) {
+            let busy = false;
+            const timer = setInterval(async () => {
+              if (busy || page.isClosed()) return;
+              busy = true;
+              try {
+                await dismissConsentPopup(page, 300).catch(() => {});
+              } finally {
+                busy = false;
+              }
+            }, intervalMs);
+
+            return () => clearInterval(timer);
+          }
+
           async function safeType(locator, value, label) {
             console.log(`Typing ${label}`);
             const page = locator.page();
@@ -675,10 +690,18 @@ jobs:
             try {
               const waitStart = Date.now();
               const waitMax = 60000;
+              const fileSelectors = [
+                'input[data-hook="form-field-files-input"]',
+                'input[type="file"]'
+              ];
               while (Date.now() - waitStart < waitMax) {
                 await dismissConsentPopup(page, 1000).catch(() => {});
 
-                const fileInputCount = await page.locator('input[data-hook="form-field-files-input"]').count().catch(() => 0);
+                let fileInputCount = 0;
+                for (const selector of fileSelectors) {
+                  fileInputCount = await page.locator(selector).count().catch(() => 0);
+                  if (fileInputCount > 0) break;
+                }
                 if (fileInputCount > 0) {
                   break;
                 }
@@ -686,13 +709,19 @@ jobs:
                 await page.waitForTimeout(500);
               }
 
-              const fileInputCount = await page.locator('input[data-hook="form-field-files-input"]').count().catch(() => 0);
+              let fileInputCount = 0;
+              for (const selector of fileSelectors) {
+                fileInputCount = await page.locator(selector).count().catch(() => 0);
+                if (fileInputCount > 0) break;
+              }
               if (!fileInputCount) {
                 throw new Error("Upload dialog did not appear within 60s");
               }
 
               console.log("Upload dialog detected via file input");
-              dialog = page.locator('[role="dialog"]').filter({ has: page.locator('input[data-hook="form-field-files-input"]') }).first();
+              dialog = page.locator('[role="dialog"]').filter({
+                has: page.locator('input[data-hook="form-field-files-input"], input[type="file"]')
+              }).first();
               if (!(await dialog.count())) {
                 // Fallback: maybe it's a full page instead of dialog
                 console.log("No dialog wrapper found — treating whole page as upload form");
@@ -712,7 +741,7 @@ jobs:
 
             console.log("Waiting for file input");
             const fileInput = dialog
-              .locator('input[data-hook="form-field-files-input"]')
+              .locator('input[data-hook="form-field-files-input"], input[type="file"]')
               .first();
 
             await fileInput.waitFor({ state: "attached" });
@@ -1110,6 +1139,7 @@ jobs:
           (async () => {
             let browser = null;
             let context = null;
+            let stopModalWatcher = () => {};
 
             // Profile count is set via the workflow "total_profiles" input (default: 3)
             const TOTAL_PROFILES = parseInt(process.env.TOTAL_PROFILES || "3", 10);
@@ -1299,6 +1329,7 @@ jobs:
               });
 
               const page = await context.newPage();
+              stopModalWatcher = startModalWatcher(page);
 
               await page.setExtraHTTPHeaders({
                 "Accept-Language": "en-US,en;q=0.9"
@@ -1524,10 +1555,15 @@ jobs:
                   await page.waitForTimeout(1000);
 
                   // Click the Upload (+) button — now already on the right content-type page
-                  await safeClick(
-                    page.locator("svg.fa-plus").first(),
-                    "Upload plus icon"
-                  );
+                  const plusIcon = page.locator("svg.fa-plus").first();
+                  const plusButton = plusIcon.locator("xpath=ancestor::button[1]").first();
+                  if (await plusButton.count()) {
+                    await safeClick(plusButton, "Upload plus button");
+                  } else {
+                    await safeClick(plusIcon, "Upload plus icon");
+                  }
+                  await page.waitForTimeout(1500);
+                  await dismissConsentPopup(page, 1500).catch(() => {});
 
                   // Wait for upload dialog to appear
                   await page.waitForTimeout(800);
@@ -1606,11 +1642,13 @@ jobs:
 
               console.log(`\n🏁 Run complete. ${successCount} upload(s) succeeded.`);
 
+              stopModalWatcher();
               await context.close();
               await browser.close();
 
             } catch (err) {
               console.error("BOT FATAL ERROR:", err);
+              stopModalWatcher();
               if (context) await context.close().catch(() => {});
               if (browser) await browser.close().catch(() => {});
               process.exit(1);
