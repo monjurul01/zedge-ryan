@@ -550,18 +550,52 @@ jobs:
 
           async function safeClick(locator, label, timeout = 30000) {
             console.log(`Clicking ${label}`);
+            const page = locator.page();
+            await dismissConsentPopup(page, 1500).catch(() => {});
             await locator.waitFor({ state: "visible", timeout });
             await locator.scrollIntoViewIfNeeded();
-            await locator.click();
+            await dismissConsentPopup(page, 1500).catch(() => {});
+            await locator.click({ timeout });
+            await dismissConsentPopup(page, 1500).catch(() => {});
+          }
+
+          async function dismissConsentPopup(page, timeoutMs = 8000) {
+            const start = Date.now();
+            const selectors = [
+              'button:has-text("Close")',
+              'button:has-text("Do not Share or Sell my Personal Information")'
+            ];
+
+            while (Date.now() - start < timeoutMs) {
+              for (const selector of selectors) {
+                const popupBtn = page.locator(selector).first();
+                if (await popupBtn.count()) {
+                  try {
+                    await popupBtn.click({ timeout: 3000 });
+                  } catch {
+                    await popupBtn.click({ force: true, timeout: 3000 });
+                  }
+                  await page.waitForTimeout(1000);
+                  return true;
+                }
+              }
+              await page.waitForTimeout(500);
+            }
+
+            return false;
           }
 
           async function safeType(locator, value, label) {
             console.log(`Typing ${label}`);
+            const page = locator.page();
+            await dismissConsentPopup(page, 1500).catch(() => {});
             await locator.waitFor({ state: "visible" });
             await locator.scrollIntoViewIfNeeded();
+            await dismissConsentPopup(page, 1500).catch(() => {});
             await locator.click();
             await locator.fill("");
             await locator.pressSequentially(value, { delay: 90 });
+            await dismissConsentPopup(page, 1500).catch(() => {});
           }
 
           async function scrollFullPage(page) {
@@ -641,7 +675,7 @@ jobs:
             try {
               await page.waitForSelector(
                 'input[data-hook="form-field-files-input"]',
-                { state: "attached", timeout: 30000 }
+                { state: "attached", timeout: 60000 }
               );
               console.log("Upload dialog detected via file input");
               dialog = page.locator('[role="dialog"]').filter({ has: page.locator('input[data-hook="form-field-files-input"]') }).first();
@@ -652,7 +686,7 @@ jobs:
               }
             } catch (e) {
               await page.screenshot({ path: "zedge-dialog-error.png", fullPage: true });
-              throw new Error(`Upload dialog did not appear after 30s. Check zedge-dialog-error.png. Original: ${e.message}`);
+              throw new Error(`Upload dialog did not appear after 60s. Check zedge-dialog-error.png. Original: ${e.message}`);
             }
             await page.waitForTimeout(1000);
 
@@ -1443,6 +1477,9 @@ jobs:
                   console.log("Navigating to Zedge upload portal");
                   await page.goto("https://upload.zedge.net", { waitUntil: "domcontentloaded" });
                   await page.waitForLoadState("networkidle");
+
+                  // Dismiss the consent popup if it appears on the portal page
+                  await dismissConsentPopup(page);
 
                   // Click Profiles tab
                   await safeClick(
