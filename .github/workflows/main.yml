@@ -688,6 +688,11 @@ jobs:
             // Wait specifically for an upload dialog that contains the file input — not the type-selection menu
             let dialog;
             try {
+              let fileChooser = null;
+              page.waitForEvent("filechooser", { timeout: 60000 })
+                .then(fc => { fileChooser = fc; })
+                .catch(() => {});
+
               const waitStart = Date.now();
               const waitMax = 60000;
               const fileSelectors = [
@@ -696,6 +701,12 @@ jobs:
               ];
               while (Date.now() - waitStart < waitMax) {
                 await dismissConsentPopup(page, 1000).catch(() => {});
+
+                if (fileChooser) {
+                  console.log("Native file chooser detected");
+                  await fileChooser.setFiles(localFile);
+                  return;
+                }
 
                 let fileInputCount = 0;
                 for (const selector of fileSelectors) {
@@ -1558,9 +1569,17 @@ jobs:
                   const plusIcon = page.locator("svg.fa-plus").first();
                   const plusButton = plusIcon.locator("xpath=ancestor::button[1]").first();
                   if (await plusButton.count()) {
-                    await safeClick(plusButton, "Upload plus button");
+                    try {
+                      await plusButton.click({ timeout: 15000 });
+                    } catch {
+                      await plusButton.click({ force: true, timeout: 15000 });
+                    }
                   } else {
-                    await safeClick(plusIcon, "Upload plus icon");
+                    try {
+                      await plusIcon.click({ timeout: 15000 });
+                    } catch {
+                      await plusIcon.click({ force: true, timeout: 15000 });
+                    }
                   }
                   await page.waitForTimeout(1500);
                   await dismissConsentPopup(page, 1500).catch(() => {});
