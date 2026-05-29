@@ -550,67 +550,18 @@ jobs:
 
           async function safeClick(locator, label, timeout = 30000) {
             console.log(`Clicking ${label}`);
-            const page = locator.page();
-            await dismissConsentPopup(page, 1500).catch(() => {});
             await locator.waitFor({ state: "visible", timeout });
             await locator.scrollIntoViewIfNeeded();
-            await dismissConsentPopup(page, 1500).catch(() => {});
-            await locator.click({ timeout });
-            await dismissConsentPopup(page, 1500).catch(() => {});
-          }
-
-          async function dismissConsentPopup(page, timeoutMs = 8000) {
-            const start = Date.now();
-            const selectors = [
-              'button:has-text("Close")',
-              'button:has-text("Do not Share or Sell my Personal Information")'
-            ];
-
-            while (Date.now() - start < timeoutMs) {
-              for (const selector of selectors) {
-                const popupBtn = page.locator(selector).first();
-                if (await popupBtn.count()) {
-                  try {
-                    await popupBtn.click({ timeout: 3000 });
-                  } catch {
-                    await popupBtn.click({ force: true, timeout: 3000 });
-                  }
-                  await page.waitForTimeout(1000);
-                  return true;
-                }
-              }
-              await page.waitForTimeout(500);
-            }
-
-            return false;
-          }
-
-          function startModalWatcher(page, intervalMs = 1000) {
-            let busy = false;
-            const timer = setInterval(async () => {
-              if (busy || page.isClosed()) return;
-              busy = true;
-              try {
-                await dismissConsentPopup(page, 300).catch(() => {});
-              } finally {
-                busy = false;
-              }
-            }, intervalMs);
-
-            return () => clearInterval(timer);
+            await locator.click();
           }
 
           async function safeType(locator, value, label) {
             console.log(`Typing ${label}`);
-            const page = locator.page();
-            await dismissConsentPopup(page, 1500).catch(() => {});
             await locator.waitFor({ state: "visible" });
             await locator.scrollIntoViewIfNeeded();
-            await dismissConsentPopup(page, 1500).catch(() => {});
             await locator.click();
             await locator.fill("");
             await locator.pressSequentially(value, { delay: 90 });
-            await dismissConsentPopup(page, 1500).catch(() => {});
           }
 
           async function scrollFullPage(page) {
@@ -688,51 +639,12 @@ jobs:
             // Wait specifically for an upload dialog that contains the file input — not the type-selection menu
             let dialog;
             try {
-              let fileChooser = null;
-              page.waitForEvent("filechooser", { timeout: 60000 })
-                .then(fc => { fileChooser = fc; })
-                .catch(() => {});
-
-              const waitStart = Date.now();
-              const waitMax = 60000;
-              const fileSelectors = [
+              await page.waitForSelector(
                 'input[data-hook="form-field-files-input"]',
-                'input[type="file"]'
-              ];
-              while (Date.now() - waitStart < waitMax) {
-                await dismissConsentPopup(page, 1000).catch(() => {});
-
-                if (fileChooser) {
-                  console.log("Native file chooser detected");
-                  await fileChooser.setFiles(localFile);
-                  return;
-                }
-
-                let fileInputCount = 0;
-                for (const selector of fileSelectors) {
-                  fileInputCount = await page.locator(selector).count().catch(() => 0);
-                  if (fileInputCount > 0) break;
-                }
-                if (fileInputCount > 0) {
-                  break;
-                }
-
-                await page.waitForTimeout(500);
-              }
-
-              let fileInputCount = 0;
-              for (const selector of fileSelectors) {
-                fileInputCount = await page.locator(selector).count().catch(() => 0);
-                if (fileInputCount > 0) break;
-              }
-              if (!fileInputCount) {
-                throw new Error("Upload dialog did not appear within 60s");
-              }
-
+                { state: "attached", timeout: 30000 }
+              );
               console.log("Upload dialog detected via file input");
-              dialog = page.locator('[role="dialog"]').filter({
-                has: page.locator('input[data-hook="form-field-files-input"], input[type="file"]')
-              }).first();
+              dialog = page.locator('[role="dialog"]').filter({ has: page.locator('input[data-hook="form-field-files-input"]') }).first();
               if (!(await dialog.count())) {
                 // Fallback: maybe it's a full page instead of dialog
                 console.log("No dialog wrapper found — treating whole page as upload form");
@@ -740,7 +652,7 @@ jobs:
               }
             } catch (e) {
               await page.screenshot({ path: "zedge-dialog-error.png", fullPage: true });
-              throw new Error(`Upload dialog did not appear after 60s. Check zedge-dialog-error.png. Original: ${e.message}`);
+              throw new Error(`Upload dialog did not appear after 30s. Check zedge-dialog-error.png. Original: ${e.message}`);
             }
             await page.waitForTimeout(1000);
 
@@ -752,7 +664,7 @@ jobs:
 
             console.log("Waiting for file input");
             const fileInput = dialog
-              .locator('input[data-hook="form-field-files-input"], input[type="file"]')
+              .locator('input[data-hook="form-field-files-input"]')
               .first();
 
             await fileInput.waitFor({ state: "attached" });
@@ -1150,7 +1062,6 @@ jobs:
           (async () => {
             let browser = null;
             let context = null;
-            let stopModalWatcher = () => {};
 
             // Profile count is set via the workflow "total_profiles" input (default: 3)
             const TOTAL_PROFILES = parseInt(process.env.TOTAL_PROFILES || "3", 10);
@@ -1329,6 +1240,83 @@ jobs:
                     }
                   };
                 }
+
+                // Keep dismissing the Zedge data collection/privacy popup whenever it appears.
+                (() => {
+                  if (window.__zedgePrivacyPopupWatcherInstalled) return;
+                  window.__zedgePrivacyPopupWatcherInstalled = true;
+
+                  const overlaySelectors = [
+                    '[role="dialog"]',
+                    '[role="alertdialog"]',
+                    '[class*="modal"]',
+                    '[class*="overlay"]',
+                    '[class*="consent"]',
+                    '[class*="cookie"]',
+                    '[class*="privacy"]',
+                    '[class*="popup"]',
+                    '[class*="notice"]',
+                    '[id*="modal"]',
+                    '[id*="popup"]',
+                    '[id*="consent"]',
+                    '[id*="cookie"]',
+                    '[id*="privacy"]'
+                  ];
+
+                  const buttonHints = ['close', 'dismiss', 'got it', 'ok', 'accept'];
+
+                  const tryDismiss = () => {
+                    const overlays = [...document.querySelectorAll(overlaySelectors.join(', '))];
+
+                    for (const overlay of overlays) {
+                      const text = (overlay.innerText || '').toLowerCase();
+                      const looksRelevant =
+                        text.includes('data collection') ||
+                        text.includes('privacy policy') ||
+                        text.includes('personal information') ||
+                        text.includes('consent') ||
+                        text.includes('privacy') ||
+                        text.includes('cookie');
+
+                      if (!looksRelevant) continue;
+
+                      const buttons = [...overlay.querySelectorAll('button, [role="button"], a')];
+                      const closeButton = buttons.find(btn => {
+                        const label = `${btn.textContent || ''} ${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`.toLowerCase();
+                        return buttonHints.some(hint => label.includes(hint));
+                      });
+
+                      if (closeButton) {
+                        closeButton.click();
+                        return true;
+                      }
+                    }
+
+                    return false;
+                  };
+
+                  const start = () => {
+                    tryDismiss();
+
+                    const observer = new MutationObserver(() => {
+                      tryDismiss();
+                    });
+
+                    observer.observe(document.documentElement, {
+                      subtree: true,
+                      childList: true,
+                      attributes: true
+                    });
+
+                    setInterval(tryDismiss, 500);
+                  };
+
+                  if (document.documentElement) {
+                    start();
+                  } else {
+                    document.addEventListener('DOMContentLoaded', start, { once: true });
+                  }
+                })();
               }, {
                 hc:       fpHC,
                 dm:       fpDM,
@@ -1340,7 +1328,6 @@ jobs:
               });
 
               const page = await context.newPage();
-              stopModalWatcher = startModalWatcher(page);
 
               await page.setExtraHTTPHeaders({
                 "Accept-Language": "en-US,en;q=0.9"
@@ -1534,9 +1521,6 @@ jobs:
                   await page.goto("https://upload.zedge.net", { waitUntil: "domcontentloaded" });
                   await page.waitForLoadState("networkidle");
 
-                  // Dismiss the consent popup if it appears on the portal page
-                  await dismissConsentPopup(page);
-
                   // Click Profiles tab
                   await safeClick(
                     page.locator('a:has-text("Profiles")').first(),
@@ -1566,23 +1550,10 @@ jobs:
                   await page.waitForTimeout(1000);
 
                   // Click the Upload (+) button — now already on the right content-type page
-                  const plusIcon = page.locator("svg.fa-plus").first();
-                  const plusButton = plusIcon.locator("xpath=ancestor::button[1]").first();
-                  if (await plusButton.count()) {
-                    try {
-                      await plusButton.click({ timeout: 15000 });
-                    } catch {
-                      await plusButton.click({ force: true, timeout: 15000 });
-                    }
-                  } else {
-                    try {
-                      await plusIcon.click({ timeout: 15000 });
-                    } catch {
-                      await plusIcon.click({ force: true, timeout: 15000 });
-                    }
-                  }
-                  await page.waitForTimeout(1500);
-                  await dismissConsentPopup(page, 1500).catch(() => {});
+                  await safeClick(
+                    page.locator("svg.fa-plus").first(),
+                    "Upload plus icon"
+                  );
 
                   // Wait for upload dialog to appear
                   await page.waitForTimeout(800);
@@ -1661,13 +1632,11 @@ jobs:
 
               console.log(`\n🏁 Run complete. ${successCount} upload(s) succeeded.`);
 
-              stopModalWatcher();
               await context.close();
               await browser.close();
 
             } catch (err) {
               console.error("BOT FATAL ERROR:", err);
-              stopModalWatcher();
               if (context) await context.close().catch(() => {});
               if (browser) await browser.close().catch(() => {});
               process.exit(1);
