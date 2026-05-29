@@ -673,10 +673,24 @@ jobs:
             // Wait specifically for an upload dialog that contains the file input — not the type-selection menu
             let dialog;
             try {
-              await page.waitForSelector(
-                'input[data-hook="form-field-files-input"]',
-                { state: "attached", timeout: 60000 }
-              );
+              const waitStart = Date.now();
+              const waitMax = 60000;
+              while (Date.now() - waitStart < waitMax) {
+                await dismissConsentPopup(page, 1000).catch(() => {});
+
+                const fileInputCount = await page.locator('input[data-hook="form-field-files-input"]').count().catch(() => 0);
+                if (fileInputCount > 0) {
+                  break;
+                }
+
+                await page.waitForTimeout(500);
+              }
+
+              const fileInputCount = await page.locator('input[data-hook="form-field-files-input"]').count().catch(() => 0);
+              if (!fileInputCount) {
+                throw new Error("Upload dialog did not appear within 60s");
+              }
+
               console.log("Upload dialog detected via file input");
               dialog = page.locator('[role="dialog"]').filter({ has: page.locator('input[data-hook="form-field-files-input"]') }).first();
               if (!(await dialog.count())) {
