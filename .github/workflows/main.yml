@@ -926,6 +926,83 @@ jobs:
             return { removed: false, statusName: "UNKNOWN" };
           }
 
+          // ── Dismiss consent/privacy modals inside iframes ──────────────
+          async function dismissConsentIframes(page) {
+            const consentKeywords = ['consent', 'cookie', 'privacy', 'cmp', 'onetrust', 'cookiebot', 'quantcast', 'sourcepoint', 'trustarc', 'didomi'];
+            const frames = page.frames();
+            for (const frame of frames) {
+              try {
+                if (frame === page.mainFrame()) continue;
+                const url = (frame.url() || '').toLowerCase();
+                if (!url || url === 'about:blank') continue;
+
+                // Only process frames whose URL clearly belongs to a consent provider
+                const isConsentFrame = consentKeywords.some(k => url.includes(k));
+                if (!isConsentFrame) continue;
+
+                console.log(`Found consent iframe: ${frame.url()}`);
+
+                const agreeBtn = frame.locator('button:has-text("Agree")').last();
+                if (await agreeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+                  await agreeBtn.click({ timeout: 5000 }).catch(() => {});
+                  console.log("Clicked 'Agree' in consent iframe");
+                  await page.waitForTimeout(1500);
+                  return true;
+                }
+
+                const acceptBtn = frame.locator('button:has-text("Accept")').last();
+                if (await acceptBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                  await acceptBtn.click({ timeout: 5000 }).catch(() => {});
+                  console.log("Clicked 'Accept' in consent iframe");
+                  await page.waitForTimeout(1500);
+                  return true;
+                }
+
+                const closeBtn = frame.locator('[aria-label*="close" i], [title*="close" i]').first();
+                if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                  await closeBtn.click({ timeout: 5000 }).catch(() => {});
+                  console.log("Clicked close in consent iframe");
+                  await page.waitForTimeout(1500);
+                  return true;
+                }
+              } catch (e) { /* skip frame */ }
+            }
+
+            // Fallback: check main page for consent modal ONLY (not upload dialogs)
+            try {
+              const mainConsent = page.locator('[class*="consent"] button:has-text("Agree"), [class*="cookie"] button:has-text("Agree"), [id*="consent"] button:has-text("Agree"), [id*="cookie"] button:has-text("Agree")').first();
+              if (await mainConsent.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await mainConsent.click({ timeout: 5000 }).catch(() => {});
+                console.log("Clicked 'Agree' on main page consent modal");
+                await page.waitForTimeout(1500);
+                return true;
+              }
+            } catch (e) { /* skip */ }
+
+            // Last resort: force-remove consent iframes only
+            try {
+              await page.evaluate(() => {
+                let removed = 0;
+                document.querySelectorAll('iframe').forEach(iframe => {
+                  const src = (iframe.src || '').toLowerCase();
+                  const id = (iframe.id || '').toLowerCase();
+                  const cls = (iframe.className || '').toLowerCase();
+                  if (src.includes('consent') || src.includes('cookie') || src.includes('privacy') || src.includes('cmp') || src.includes('onetrust') || src.includes('sourcepoint') || src.includes('quantcast') || src.includes('cookiebot') || id.includes('consent') || cls.includes('consent')) {
+                    iframe.remove();
+                    removed++;
+                  }
+                });
+                if (removed > 0) {
+                  document.body.style.overflow = '';
+                  document.documentElement.style.overflow = '';
+                }
+                return removed;
+              }).catch(() => {});
+            } catch (e) { /* skip */ }
+
+            return false;
+          }
+
           // ── Random Fingerprint Pool ────────────────────────────────
           const FP_USER_AGENTS = [
             // ── Chrome on Windows ──────────────────────────────────────
@@ -1247,38 +1324,26 @@ jobs:
                   window.__zedgePrivacyPopupWatcherInstalled = true;
 
                   const overlaySelectors = [
-                    '[role="dialog"]',
-                    '[role="alertdialog"]',
-                    '[class*="modal"]',
-                    '[class*="overlay"]',
                     '[class*="consent"]',
                     '[class*="cookie"]',
                     '[class*="privacy"]',
-                    '[class*="popup"]',
                     '[class*="notice"]',
-                    '[id*="modal"]',
-                    '[id*="popup"]',
                     '[id*="consent"]',
                     '[id*="cookie"]',
                     '[id*="privacy"]'
                   ];
 
-                  const buttonHints = ['close', 'dismiss', 'got it', 'ok', 'accept'];
+                  const buttonHints = ['close', 'dismiss', 'got it', 'ok', 'accept', 'agree'];
 
                   const tryDismiss = () => {
+                    // ── 1. Try main document overlays (consent/cookie/privacy only) ──
                     const overlays = [...document.querySelectorAll(overlaySelectors.join(', '))];
 
                     for (const overlay of overlays) {
-                      const text = (overlay.innerText || '').toLowerCase();
-                      const looksRelevant =
-                        text.includes('data collection') ||
-                        text.includes('privacy policy') ||
-                        text.includes('personal information') ||
-                        text.includes('consent') ||
-                        text.includes('privacy') ||
-                        text.includes('cookie');
-
-                      if (!looksRelevant) continue;
+                      // Skip Zedge's own workflow dialogs
+                      if (overlay.querySelector('[data-hook]') || overlay.closest('[data-hook]')) continue;
+                      // Skip any overlay containing form inputs (upload/login forms)
+                      if (overlay.querySelector('input[type="file"], input[type="email"], input[type="password"], textarea')) continue;
 
                       const buttons = [...overlay.querySelectorAll('button, [role="button"], a')];
                       const closeButton = buttons.find(btn => {
@@ -1288,6 +1353,52 @@ jobs:
 
                       if (closeButton) {
                         closeButton.click();
+                        return true;
+                      }
+                    }
+
+                    // ── 2. Try consent iframes only ──
+                    const consentKW = ['consent', 'cookie', 'privacy', 'onetrust', 'cookiebot', 'quantcast', 'sourcepoint', 'cmp'];
+                    const iframes = [...document.querySelectorAll('iframe')];
+                    for (const iframe of iframes) {
+                      try {
+                        const src = (iframe.src || '').toLowerCase();
+                        if (!consentKW.some(k => src.includes(k))) continue;
+
+                        const iDoc = iframe.contentDocument;
+                        if (!iDoc) continue;
+                        const iframeOverlays = iDoc.querySelectorAll(
+                          '[class*="consent"], [class*="cookie"], [class*="privacy"], [id*="consent"], [id*="cookie"]'
+                        );
+                        for (const ov of iframeOverlays) {
+                          const iButtons = [...ov.querySelectorAll('button, [role="button"], a')];
+                          const closeBtn = iButtons.find(b => {
+                            const l = `${b.textContent || ''} ${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`.toLowerCase();
+                            return buttonHints.some(h => l.includes(h));
+                          });
+                          if (closeBtn) { closeBtn.click(); return true; }
+                        }
+                      } catch (e) {
+                        // Cross-origin iframe — remove if consent-related
+                        const src = (iframe.src || '').toLowerCase();
+                        if (consentKW.some(k => src.includes(k))) {
+                          iframe.remove();
+                          document.body.style.overflow = '';
+                          document.documentElement.style.overflow = '';
+                          return true;
+                        }
+                      }
+                    }
+
+                    // ── 3. Force-remove any leftover overlay blocking the page ──
+                    const blocked = document.querySelectorAll(
+                      '[class*="consent"], [class*="cookie"], [class*="privacy"], [id*="consent"], [id*="cookie"]'
+                    );
+                    for (const el of blocked) {
+                      if (!el.querySelector('[data-hook]') && !el.closest('[data-hook]')) {
+                        el.remove();
+                        document.body.style.overflow = '';
+                        document.documentElement.style.overflow = '';
                         return true;
                       }
                     }
@@ -1345,6 +1456,7 @@ jobs:
               await page.goto("https://upload.zedge.net", { waitUntil: "domcontentloaded" });
               await page.waitForLoadState("networkidle");
               await page.waitForTimeout(2000);
+              await dismissConsentIframes(page);
 
               // Screenshot to capture exactly what the page shows before login attempt
               await page.screenshot({ path: "zedge-before-login.png", fullPage: true });
@@ -1520,6 +1632,7 @@ jobs:
                   console.log("Navigating to Zedge upload portal");
                   await page.goto("https://upload.zedge.net", { waitUntil: "domcontentloaded" });
                   await page.waitForLoadState("networkidle");
+                  await dismissConsentIframes(page);
 
                   // Click Profiles tab
                   await safeClick(
@@ -1548,6 +1661,7 @@ jobs:
                   await page.goto(targetContentUrl, { waitUntil: "domcontentloaded" });
                   await page.waitForLoadState("networkidle");
                   await page.waitForTimeout(1000);
+                  await dismissConsentIframes(page);
 
                   // Click the Upload (+) button — now already on the right content-type page
                   await safeClick(
