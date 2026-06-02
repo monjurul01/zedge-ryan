@@ -417,7 +417,7 @@ jobs:
               // e.g. 6 profiles, limit 3/day: Day1→0,1,2  Day2→3,4,5  Day3→0,1,2 ...
             }
 
-            const ZEDGE_DAILY_LIMIT = 3; // Zedge max uploads per day
+            const ZEDGE_DAILY_LIMIT = 1; // Zedge max uploads per day
             if (state.totalUploadsToday >= ZEDGE_DAILY_LIMIT) {
               console.log(`🛑 Zedge daily limit of ${ZEDGE_DAILY_LIMIT} uploads reached. Exiting safely.`);
               process.exit(0); 
@@ -1145,7 +1145,7 @@ jobs:
 
             try {
               // 1. Check Limits & figure out how many uploads we can still do today
-              const ZEDGE_DAILY_LIMIT = 3;
+              const ZEDGE_DAILY_LIMIT = 1;
               const profileStateData = await getProfileState(TOTAL_PROFILES);
               const remainingUploads = ZEDGE_DAILY_LIMIT - profileStateData.state.totalUploadsToday;
               let currentProfileIndex = profileStateData.nextProfileIndex;
