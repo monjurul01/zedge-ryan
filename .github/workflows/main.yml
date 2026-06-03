@@ -928,58 +928,65 @@ jobs:
 
           // ── Dismiss consent/privacy modals inside iframes ──────────────
           async function dismissConsentIframes(page) {
-            const consentKeywords = ['consent', 'cookie', 'privacy', 'cmp', 'onetrust', 'cookiebot', 'quantcast', 'sourcepoint', 'trustarc', 'didomi'];
-            const frames = page.frames();
-            for (const frame of frames) {
-              try {
-                if (frame === page.mainFrame()) continue;
-                const url = (frame.url() || '').toLowerCase();
-                if (!url || url === 'about:blank') continue;
+            // Try multiple times — consent iframe may load late
+            for (let attempt = 0; attempt < 3; attempt++) {
+              const frames = page.frames();
+              for (const frame of frames) {
+                try {
+                  if (frame === page.mainFrame()) continue;
+                  const url = (frame.url() || '').toLowerCase();
+                  if (!url || url === 'about:blank') continue;
+                  // Skip Zedge's own frames — never interfere with them
+                  if (url.includes('zedge.net') || url.includes('zedge')) continue;
 
-                // Only process frames whose URL clearly belongs to a consent provider
-                const isConsentFrame = consentKeywords.some(k => url.includes(k));
-                if (!isConsentFrame) continue;
+                  // Try "Agree" button
+                  const agreeBtn = frame.locator('button:has-text("Agree")').last();
+                  if (await agreeBtn.isVisible({ timeout: 1500 }).catch(() => false)) {
+                    await agreeBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log("Clicked 'Agree' in frame: " + frame.url());
+                    await page.waitForTimeout(1500);
+                    return true;
+                  }
 
-                console.log(`Found consent iframe: ${frame.url()}`);
+                  // Try "Accept" button
+                  const acceptBtn = frame.locator('button:has-text("Accept")').last();
+                  if (await acceptBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    await acceptBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log("Clicked 'Accept' in frame: " + frame.url());
+                    await page.waitForTimeout(1500);
+                    return true;
+                  }
 
-                const agreeBtn = frame.locator('button:has-text("Agree")').last();
-                if (await agreeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-                  await agreeBtn.click({ timeout: 5000 }).catch(() => {});
-                  console.log("Clicked 'Agree' in consent iframe");
-                  await page.waitForTimeout(1500);
-                  return true;
-                }
-
-                const acceptBtn = frame.locator('button:has-text("Accept")').last();
-                if (await acceptBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-                  await acceptBtn.click({ timeout: 5000 }).catch(() => {});
-                  console.log("Clicked 'Accept' in consent iframe");
-                  await page.waitForTimeout(1500);
-                  return true;
-                }
-
-                const closeBtn = frame.locator('[aria-label*="close" i], [title*="close" i]').first();
-                if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-                  await closeBtn.click({ timeout: 5000 }).catch(() => {});
-                  console.log("Clicked close in consent iframe");
-                  await page.waitForTimeout(1500);
-                  return true;
-                }
-              } catch (e) { /* skip frame */ }
+                  // Try close (X) button
+                  const closeBtn = frame.locator('[aria-label*="close" i], [title*="close" i]').first();
+                  if (await closeBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    await closeBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log("Clicked close in frame: " + frame.url());
+                    await page.waitForTimeout(1500);
+                    return true;
+                  }
+                } catch (e) { /* skip frame */ }
+              }
+              if (attempt < 2) await page.waitForTimeout(2000);
             }
 
-            // Fallback: check main page for consent modal ONLY (not upload dialogs)
+            // Fallback: check main page for ANY visible "Agree" element (broad search)
             try {
-              const mainConsent = page.locator('[class*="consent"] button:has-text("Agree"), [class*="cookie"] button:has-text("Agree"), [id*="consent"] button:has-text("Agree"), [id*="cookie"] button:has-text("Agree")').first();
-              if (await mainConsent.isVisible({ timeout: 2000 }).catch(() => false)) {
-                await mainConsent.click({ timeout: 5000 }).catch(() => {});
-                console.log("Clicked 'Agree' on main page consent modal");
+              const agreeEls = await page.locator('text=Agree').all();
+              for (let i = agreeEls.length - 1; i >= 0; i--) {
+                const el = agreeEls[i];
+                const visible = await el.isVisible().catch(() => false);
+                if (!visible) continue;
+                const isWorkflow = await el.evaluate(e => !!e.closest('[data-hook]')).catch(() => true);
+                if (isWorkflow) continue;
+                await el.click({ timeout: 5000 }).catch(() => {});
+                console.log("Clicked 'Agree' element on main page (broad match)");
                 await page.waitForTimeout(1500);
                 return true;
               }
             } catch (e) { /* skip */ }
 
-            // Last resort: force-remove consent iframes only
+            // Last resort: force-remove consent iframes
             try {
               await page.evaluate(() => {
                 let removed = 0;
@@ -1510,6 +1517,10 @@ jobs:
                       }).catch(() => false);
 
                       if (isConsentOverlay) {
+                        // Skip Zedge's own workflow elements (upload, login, edit meta)
+                        const isZedgeWorkflow = await btn.evaluate(el => !!el.closest('[data-hook]')).catch(() => false);
+                        if (isZedgeWorkflow) continue;
+
                         await btn.click({ timeout: 2000 });
                         console.log(`✅ Modal dismissed via: ${selector}`);
                         modalDismissed = true;
@@ -1573,6 +1584,64 @@ jobs:
                 console.log("No consent/privacy modal detected — proceeding.");
               }
 
+              // ── Consent iframe handler via Playwright ──
+              // The consent modal often lives inside an iframe that page.locator() can't reach.
+              // Use page.frames() to find and dismiss it.
+              for (const frame of page.frames()) {
+                try {
+                  if (frame === page.mainFrame()) continue;
+                  const fUrl = (frame.url() || '').toLowerCase();
+                  if (!fUrl || fUrl === 'about:blank') continue;
+                  if (fUrl.includes('zedge.net') || fUrl.includes('zedge')) continue;
+
+                  console.log(`Found third-party iframe during pre-login: ${frame.url()}`);
+
+                  const aBtn = frame.locator('button:has-text("Agree")').last();
+                  if (await aBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+                    await aBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log("Clicked 'Agree' in consent iframe (pre-login)");
+                    await page.waitForTimeout(1500);
+                    modalDismissed = true;
+                    break;
+                  }
+
+                  const acBtn = frame.locator('button:has-text("Accept")').last();
+                  if (await acBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    await acBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log("Clicked 'Accept' in consent iframe (pre-login)");
+                    await page.waitForTimeout(1500);
+                    modalDismissed = true;
+                    break;
+                  }
+
+                  const cBtn = frame.locator('[aria-label*="close" i], [title*="close" i]').first();
+                  if (await cBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    await cBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log("Clicked close in consent iframe (pre-login)");
+                    await page.waitForTimeout(1500);
+                    modalDismissed = true;
+                    break;
+                  }
+                } catch (e) { /* skip frame */ }
+              }
+
+              // Also try main page — broad "Agree" text match
+              if (!modalDismissed) {
+                const preLoginAgreeEls = await page.locator('text=Agree').all().catch(() => []);
+                for (let i = preLoginAgreeEls.length - 1; i >= 0; i--) {
+                  const el = preLoginAgreeEls[i];
+                  const visible = await el.isVisible().catch(() => false);
+                  if (!visible) continue;
+                  const isWorkflow = await el.evaluate(e => !!e.closest('[data-hook]')).catch(() => true);
+                  if (isWorkflow) continue;
+                  await el.click({ timeout: 5000 }).catch(() => {});
+                  console.log("Clicked 'Agree' element on main page (pre-login broad)");
+                  await page.waitForTimeout(1500);
+                  modalDismissed = true;
+                  break;
+                }
+              }
+
               await page.waitForTimeout(500);
 
               await safeClick(
@@ -1606,6 +1675,36 @@ jobs:
               console.log("Waiting for login success bell icon");
               await page.locator('svg[data-icon="bell"]').waitFor({ state: "visible" });
               await page.screenshot({ path: "zedge-after-login.png", fullPage: true });
+
+              // ── Post-login consent iframe handler ──
+              for (const frame of page.frames()) {
+                try {
+                  if (frame === page.mainFrame()) continue;
+                  const fUrl = (frame.url() || '').toLowerCase();
+                  if (!fUrl || fUrl === 'about:blank') continue;
+                  if (fUrl.includes('zedge.net') || fUrl.includes('zedge')) continue;
+                  console.log(`Found third-party frame after login: ${frame.url()}`);
+                  const aBtn = frame.locator('button:has-text("Agree")').last();
+                  if (await aBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+                    await aBtn.click({ timeout: 5000 }).catch(() => {});
+                    console.log("Clicked 'Agree' in iframe (post-login)");
+                    await page.waitForTimeout(1500);
+                  }
+                } catch (e) { /* skip */ }
+              }
+              // Also check main page — broad "Agree" text match
+              const postLoginAgreeEls = await page.locator('text=Agree').all().catch(() => []);
+              for (let i = postLoginAgreeEls.length - 1; i >= 0; i--) {
+                const el = postLoginAgreeEls[i];
+                const visible = await el.isVisible().catch(() => false);
+                if (!visible) continue;
+                const isWorkflow = await el.evaluate(e => !!e.closest('[data-hook]')).catch(() => true);
+                if (isWorkflow) continue;
+                await el.click({ timeout: 5000 }).catch(() => {});
+                console.log("Clicked 'Agree' element on main page (post-login broad)");
+                await page.waitForTimeout(1500);
+                break;
+              }
 
               // ─────────────────────────────────────────────────────────────
               // 5. UPLOAD LOOP — repeat up to remainingUploads times
