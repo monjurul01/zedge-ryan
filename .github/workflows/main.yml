@@ -1010,6 +1010,73 @@ jobs:
             return false;
           }
 
+          // ── AUTO-KILL consent popup instantly (Playwright level) ─────
+          async function autoKillConsent(page) {
+            try {
+              // 1. Remove consent iframes
+              const frames = page.frames();
+              for (const frame of frames) {
+                try {
+                  if (frame === page.mainFrame()) continue;
+                  const url = (frame.url() || '').toLowerCase();
+                  if (!url || url === 'about:blank') continue;
+                  if (url.includes('zedge')) continue;
+                  if (url.includes('consent') || url.includes('cookie') || url.includes('privacy') || url.includes('onetrust') || url.includes('cookiebot') || url.includes('sourcepoint')) {
+                    await frame.evaluate(() => {
+                      document.documentElement.remove();
+                    }).catch(() => {});
+                    console.log(`🚫 Killed consent frame: ${url.slice(0, 60)}`);
+                  }
+                } catch (e) { /* skip */ }
+              }
+
+              // 2. Click Agree/Accept buttons on main page (non-Zedge only)
+              const consentButtons = ['Agree', 'Accept All', 'Allow All', 'I Agree', 'OK, Got it', 'Accept'];
+              for (const text of consentButtons) {
+                try {
+                  const btn = page.locator(`button:has-text("${text}")`).first();
+                  const visible = await btn.isVisible({ timeout: 500 }).catch(() => false);
+                  if (!visible) continue;
+                  const isZedge = await btn.evaluate(el => !!el.closest('[data-hook]')).catch(() => true);
+                  if (isZedge) continue;
+                  const inConsent = await btn.evaluate(el => {
+                    const p = el.closest('[class*="consent"], [class*="cookie"], [class*="privacy"], [id*="consent"], [role="dialog"], [role="alertdialog"]');
+                    return !!p;
+                  }).catch(() => false);
+                  if (inConsent) {
+                    await btn.click({ timeout: 2000 }).catch(() => {});
+                    console.log(`✅ Auto-clicked consent button: ${text}`);
+                    await page.waitForTimeout(500);
+                    return true;
+                  }
+                } catch (e) { /* skip */ }
+              }
+
+              // 3. Force remove consent overlays via JS
+              await page.evaluate(() => {
+                const consentKW = ['consent management', 'cookie policy', 'privacy policy', 'we and our partners'];
+                document.querySelectorAll('iframe').forEach(f => {
+                  const src = (f.src || '').toLowerCase();
+                  if (!src.includes('zedge') && (src.includes('consent') || src.includes('cookie') || src.includes('privacy') || src.includes('onetrust') || src.includes('cookiebot'))) {
+                    f.remove();
+                  }
+                });
+                document.querySelectorAll('div, section, aside').forEach(el => {
+                  const text = (el.textContent || '').toLowerCase().slice(0, 500);
+                  if (consentKW.some(k => text.includes(k))) {
+                    if (!el.closest('[data-hook]') && !el.querySelector('[data-hook]')) {
+                      el.remove();
+                      document.body.style.overflow = '';
+                      document.documentElement.style.overflow = '';
+                    }
+                  }
+                });
+              }).catch(() => {});
+
+              return false;
+            } catch (e) { return false; }
+          }
+
           // ── Random Fingerprint Pool ────────────────────────────────
           const FP_USER_AGENTS = [
             // ── Chrome on Windows ──────────────────────────────────────
@@ -1218,7 +1285,78 @@ jobs:
               context.setDefaultTimeout(0);
               context.setDefaultNavigationTimeout(0);
 
+              // ── BLOCK only third-party consent CMP scripts ──────────────
+              await context.route('**/*', (route) => {
+                const url = route.request().url().toLowerCase();
+                if (url.includes('zedge.net') || url.includes('zedge.')) {
+                  return route.continue();
+                }
+                const thirdPartyCMPs = [
+                  'sourcepoint.', 'onetrust.com', 'cookiebot.com', 'quantcast.com',
+                  'trustarc.com', 'osano.com', 'termly.io', 'cookieyes.com',
+                  'complianz.io', 'usercentrics.com', 'didomi.io', 'axeptio.com',
+                  'klaro.org', 'iubenda.com', 'consentmanager.net', 'consentframework.com'
+                ];
+                if (thirdPartyCMPs.some(d => url.includes(d))) {
+                  console.log(`🚫 Blocked CMP: ${url.slice(0, 80)}`);
+                  return route.abort();
+                }
+                return route.continue();
+              });
+
+              await context.addCookies([
+                { name: 'OptanonAlertBoxClosed', value: new Date().toISOString(), domain: '.zedge.net', path: '/' },
+                { name: 'OptanonConsent', value: 'isIABGlobal=false&datestamp=2024-01-01T00:00:00.000Z&hosts=&consentId=1&interactionCount=1&landingPath=NotLandingPage&groups=C0001:1,C0002:1,C0003:1,C0004:1', domain: '.zedge.net', path: '/' },
+                { name: 'CookieConsent', value: '{stamp:%27-1%27%2Cnecessary:true%2Cpreferences:true%2Cstatistics:true%2Cmarketing:true%2Cmethod:%27implied%27%2Cver:1%2Cutc:1700000000000%2Cregion:%27us%27}', domain: '.zedge.net', path: '/' },
+                { name: 'euconsent-v2', value: 'CQJzZgAQJzZgAAHABBENBfFgAP_gAEPgACiQKNNB7G7eTWlBeXp-YPtr0aYkW0NB06AKABgBKgIcQSwkKBFAGJCEAAGFgAAQAAAAYIAAAgEBAAIIAACAAAAAAAIAEBAAAAAAIAAAAQAAAAAAAgAgAAAAAAAAIAAAAAAAQAAAAIAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAACAAAAAgAA', domain: '.zedge.net', path: '/' },
+                { name: 'tcf_consent', value: 'true', domain: '.zedge.net', path: '/' },
+                { name: '_cmp Consent', value: 'true', domain: '.zedge.net', path: '/' },
+                { name: 'cookiesAccepted', value: 'true', domain: '.zedge.net', path: '/' },
+                { name: 'privacyAccepted', value: 'true', domain: '.zedge.net', path: '/' },
+                { name: 'gdprAccepted', value: 'true', domain: '.zedge.net', path: '/' },
+                { name: 'consentGiven', value: 'true', domain: '.zedge.net', path: '/' },
+                { name: 'cookieConsentGiven', value: 'true', domain: '.zedge.net', path: '/' }
+              ]);
+              console.log("✅ Consent blocked + cookies set — popups will NOT appear");
+
               await context.addInitScript((fp) => {
+                // ── OVERRIDE CMP APIs — tell them consent is ALREADY given ──
+                (() => {
+                  window.__tcfapi = function(command, version, callback, parameter) {
+                    if (command === 'getTCData') {
+                      callback({
+                        tcString: 'CQJzZgAQJzZgAAHABBENBfFgAP_gAEPgACiQKNNB7G7eTWlBeXp',
+                        cmpId: 1, cmpVersion: 1, gdprApplies: true,
+                        tcfPolicyVersion: 2, isServiceSpecific: true,
+                        purpose: { consents: { 1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true } },
+                        vendor: { consents: {} },
+                        eventStatus: 'tcloaded', cmpStatus: 'loaded'
+                      }, true);
+                    } else if (command === 'ping') {
+                      callback({ cmpStatus: 'loaded', cmpId: 1, eventStatus: 'tcloaded' });
+                    } else if (command === 'addEventListener') {
+                      callback({ tcString: 'CQJzZgAQJzZgAAHABBENBfFgAP_gAEPgACiQKNNB7G7eTWlBeXp', eventStatus: 'tcloaded', cmpStatus: 'loaded' }, true);
+                    } else if (command === 'removeEventListener') {
+                      callback({}, true);
+                    }
+                  };
+
+                  window.OnetConsent = window.OnetConsent || {};
+                  window.OnetConsent.getConsent = () => ({ consent: true, categories: { C0001: true, C0002: true, C0003: true, C0004: true } });
+                  window.OneTrust = window.OneTrust || {};
+                  window.OneTrust.OnConsentChanged = () => {};
+                  window.Optanon = window.Optanon || {};
+                  window.Optanon.GetDomainData = () => ({ Groups: [{ GroupId: 'C0001' }, { GroupId: 'C0002' }, { GroupId: 'C0003' }, { GroupId: 'C0004' }] });
+                  window.CookieConsent = window.CookieConsent || {};
+                  window.CookieConsent.running = false;
+                  window.CookieConsent.visible = false;
+                  window.__cmp = function(command, version, callback) {
+                    if (command === 'getConsentData') {
+                      callback({ gdprApplies: true, consentData: 'CQJzZgAQJzZgAAHABBENBfFgAP_gAEPgACiQKNNB7G7eTWlBeXp' }, true);
+                    }
+                  };
+                })();
+
                 // Hide automation
                 Object.defineProperty(navigator, "webdriver", { get: () => undefined });
                 delete navigator.__proto__.webdriver;
@@ -1326,108 +1464,80 @@ jobs:
                   };
                 }
 
-                // Keep dismissing the Zedge data collection/privacy popup whenever it appears.
+                // ── AUTO-KILL consent/cookie popups the INSTANT they appear ──
+                // ONLY targets third-party consent overlays — NEVER touches Zedge's own UI
                 (() => {
-                  if (window.__zedgePrivacyPopupWatcherInstalled) return;
-                  window.__zedgePrivacyPopupWatcherInstalled = true;
+                  if (window.__consentAutoKillerInstalled) return;
+                  window.__consentAutoKillerInstalled = true;
 
-                  const overlaySelectors = [
-                    '[class*="consent"]',
-                    '[class*="cookie"]',
-                    '[class*="privacy"]',
-                    '[class*="notice"]',
-                    '[id*="consent"]',
-                    '[id*="cookie"]',
-                    '[id*="privacy"]'
-                  ];
+                  const CONSENT_TITLE = 'consent management';
+                  const CONSENT_BODY = 'we and our partners place cookies';
+                  const CMP_KEYWORDS = ['onetrust', 'cookiebot', 'quantcast', 'sourcepoint', 'cookieconsent', 'cmp'];
 
-                  const buttonHints = ['close', 'dismiss', 'got it', 'ok', 'accept', 'agree'];
+                  const isZedgeUI = (el) => {
+                    if (!el) return false;
+                    if (el.closest && el.closest('[data-hook]')) return true;
+                    if (el.querySelector && el.querySelector('[data-hook]')) return true;
+                    if (el.querySelector && el.querySelector('input[type="file"], input[type="email"], input[type="password"]')) return true;
+                    if (el.querySelector && el.querySelector('button[type="submit"]')) return true;
+                    return false;
+                  };
 
-                  const tryDismiss = () => {
-                    // ── 1. Try main document overlays (consent/cookie/privacy only) ──
-                    const overlays = [...document.querySelectorAll(overlaySelectors.join(', '))];
+                  const isConsentPopup = (el) => {
+                    if (!el) return false;
+                    const title = (el.querySelector('h1, h2, h3, [class*="title"]') || {}).textContent || '';
+                    if (title.toLowerCase().includes(CONSENT_TITLE)) return true;
+                    const text = (el.textContent || '').toLowerCase().slice(0, 1000);
+                    if (text.includes(CONSENT_BODY)) return true;
+                    const cls = (el.className || '').toString().toLowerCase();
+                    const id = (el.id || '').toLowerCase();
+                    if (CMP_KEYWORDS.some(k => cls.includes(k) || id.includes(k))) return true;
+                    return false;
+                  };
 
-                    for (const overlay of overlays) {
-                      // Skip Zedge's own workflow dialogs
-                      if (overlay.querySelector('[data-hook]') || overlay.closest('[data-hook]')) continue;
-                      // Skip any overlay containing form inputs (upload/login forms)
-                      if (overlay.querySelector('input[type="file"], input[type="email"], input[type="password"], textarea')) continue;
-
-                      const buttons = [...overlay.querySelectorAll('button, [role="button"], a')];
-                      const closeButton = buttons.find(btn => {
-                        const label = `${btn.textContent || ''} ${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''}`.toLowerCase();
-                        return buttonHints.some(hint => label.includes(hint));
-                      });
-
-                      if (closeButton) {
-                        closeButton.click();
-                        return true;
+                  const tryAutoKill = () => {
+                    document.querySelectorAll('iframe').forEach(iframe => {
+                      if (isZedgeUI(iframe)) return;
+                      const src = (iframe.src || '').toLowerCase();
+                      if (src.includes('zedge')) return;
+                      if (CMP_KEYWORDS.some(k => src.includes(k)) || src.includes('consent')) {
+                        iframe.remove();
+                        document.body.style.overflow = '';
+                        document.documentElement.style.overflow = '';
                       }
-                    }
+                    });
 
-                    // ── 2. Try consent iframes only ──
-                    const consentKW = ['consent', 'cookie', 'privacy', 'onetrust', 'cookiebot', 'quantcast', 'sourcepoint', 'cmp'];
-                    const iframes = [...document.querySelectorAll('iframe')];
-                    for (const iframe of iframes) {
-                      try {
-                        const src = (iframe.src || '').toLowerCase();
-                        if (!consentKW.some(k => src.includes(k))) continue;
-
-                        const iDoc = iframe.contentDocument;
-                        if (!iDoc) continue;
-                        const iframeOverlays = iDoc.querySelectorAll(
-                          '[class*="consent"], [class*="cookie"], [class*="privacy"], [id*="consent"], [id*="cookie"]'
-                        );
-                        for (const ov of iframeOverlays) {
-                          const iButtons = [...ov.querySelectorAll('button, [role="button"], a')];
-                          const closeBtn = iButtons.find(b => {
-                            const l = `${b.textContent || ''} ${b.getAttribute('aria-label') || ''} ${b.getAttribute('title') || ''}`.toLowerCase();
-                            return buttonHints.some(h => l.includes(h));
-                          });
-                          if (closeBtn) { closeBtn.click(); return true; }
-                        }
-                      } catch (e) {
-                        // Cross-origin iframe — remove if consent-related
-                        const src = (iframe.src || '').toLowerCase();
-                        if (consentKW.some(k => src.includes(k))) {
-                          iframe.remove();
-                          document.body.style.overflow = '';
-                          document.documentElement.style.overflow = '';
-                          return true;
-                        }
-                      }
-                    }
-
-                    // ── 3. Force-remove any leftover overlay blocking the page ──
-                    const blocked = document.querySelectorAll(
-                      '[class*="consent"], [class*="cookie"], [class*="privacy"], [id*="consent"], [id*="cookie"]'
-                    );
-                    for (const el of blocked) {
-                      if (!el.querySelector('[data-hook]') && !el.closest('[data-hook]')) {
+                    document.querySelectorAll('div, section, aside').forEach(el => {
+                      if (isZedgeUI(el)) return;
+                      if (isConsentPopup(el)) {
                         el.remove();
                         document.body.style.overflow = '';
                         document.documentElement.style.overflow = '';
-                        return true;
                       }
-                    }
+                    });
+
+                    document.querySelectorAll('button').forEach(btn => {
+                      if (isZedgeUI(btn)) return;
+                      const label = (btn.textContent || '').toLowerCase().trim();
+                      if (!['agree', 'accept all', 'allow all', 'i agree'].includes(label)) return;
+                      let parent = btn.parentElement;
+                      for (let i = 0; i < 5 && parent; i++) {
+                        if (isConsentPopup(parent)) {
+                          btn.click();
+                          return;
+                        }
+                        parent = parent.parentElement;
+                      }
+                    });
 
                     return false;
                   };
 
                   const start = () => {
-                    tryDismiss();
-
-                    const observer = new MutationObserver(() => {
-                      tryDismiss();
-                    });
-
-                    observer.observe(document.documentElement, {
-                      subtree: true,
-                      childList: true,
-                      attributes: true
-                    });
-
-                    setInterval(tryDismiss, 500);
+                    tryAutoKill();
+                    const observer = new MutationObserver(() => tryAutoKill());
+                    observer.observe(document.documentElement, { subtree: true, childList: true });
+                    setInterval(tryAutoKill, 500);
                   };
 
                   if (document.documentElement) {
@@ -1739,16 +1849,24 @@ jobs:
                     page.locator('a:has-text("Profiles")').first(),
                     "Profiles"
                   );
+                  await page.waitForTimeout(1500);
+                  await dismissConsentIframes(page);
+                  await autoKillConsent(page);
 
                   // Click the correct rotated profile
                   await safeClick(
                     page.locator('[data-hook="profile-list"] > div').nth(currentProfileIndex),
                     `Profile Index ${currentProfileIndex}`
                   );
+                  await page.waitForTimeout(1500);
+                  await dismissConsentIframes(page);
+                  await autoKillConsent(page);
 
                   // Wait for the profile page to fully render before touching anything.
                   await page.waitForLoadState("networkidle");
                   await page.waitForTimeout(1500);
+                  await dismissConsentIframes(page);
+                  await autoKillConsent(page);
 
                   // Navigate directly to the correct content-type URL so we never need to
                   // interact with the unreliable type-selection modal.
