@@ -1821,6 +1821,11 @@ jobs:
               // ─────────────────────────────────────────────────────────────
               let successCount = 0;
 
+              // ── Continuous consent blocker — runs every 2 seconds during upload loop ──
+              const consentBlocker = setInterval(async () => {
+                try { await autoKillConsent(page); } catch (e) {}
+              }, 2000);
+
               for (let i = 0; i < remainingUploads; i++) {
                 let queueItem = null;
                 const uploadNum = i + 1;
@@ -1842,7 +1847,7 @@ jobs:
                   console.log("Navigating to Zedge upload portal");
                   await page.goto("https://upload.zedge.net", { waitUntil: "domcontentloaded" });
                   await page.waitForLoadState("networkidle");
-                  await dismissConsentIframes(page);
+                  await autoKillConsent(page);
 
                   // Click Profiles tab
                   await safeClick(
@@ -1879,7 +1884,7 @@ jobs:
                   await page.goto(targetContentUrl, { waitUntil: "domcontentloaded" });
                   await page.waitForLoadState("networkidle");
                   await page.waitForTimeout(1000);
-                  await dismissConsentIframes(page);
+                  await autoKillConsent(page);
 
                   // Click the Upload (+) button — now already on the right content-type page
                   await safeClick(
@@ -1889,6 +1894,7 @@ jobs:
 
                   // Wait for upload dialog to appear
                   await page.waitForTimeout(800);
+                  await autoKillConsent(page);
                   await page.screenshot({ path: `zedge-upload-menu-${uploadNum}.png`, fullPage: false });
 
                   // Upload the file
@@ -1901,9 +1907,11 @@ jobs:
                     category:    queueItem.category,
                     description: queueItem.description
                   });
+                  await autoKillConsent(page);
 
                   // Check publish status — returns {removed, statusName} instead of throwing
                   const publishResult = await verifyPublishStatus(page);
+                  await autoKillConsent(page);
 
                   await page.screenshot({ path: `zedge-final-${uploadNum}.png`, fullPage: true });
 
@@ -1964,6 +1972,7 @@ jobs:
 
               console.log(`\n🏁 Run complete. ${successCount} upload(s) succeeded.`);
 
+              clearInterval(consentBlocker);
               await context.close();
               await browser.close();
 
