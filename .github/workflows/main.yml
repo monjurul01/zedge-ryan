@@ -1098,7 +1098,6 @@ jobs:
                 'Got it',
                 'Allow',
                 'Continue',
-                'Close',
                 'Dismiss',
                 'Not now',
                 'No thanks',
