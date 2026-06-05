@@ -1660,6 +1660,25 @@ jobs:
                     return false;
                   };
 
+                  const isZedgeOwnedModal = (el) => {
+                    if (!el || isZedgeUI(el)) return true;
+                    const root = el.querySelector ? el : el.closest?.('dialog, [role="dialog"], [role="alertdialog"], [class*="modal"], [class*="popup"], [class*="overlay"]');
+                    const scope = root || el;
+                    if (!scope || !scope.querySelector) return false;
+                    return !!scope.querySelector(
+                      'form, input, textarea, select, button[type="submit"], input[type="file"], input[type="email"], input[type="password"]'
+                    );
+                  };
+
+                  const describeNode = (el) => {
+                    if (!el) return 'unknown';
+                    const tag = (el.tagName || '').toLowerCase();
+                    const id = (el.id || '').toString().trim();
+                    const cls = (el.className || '').toString().trim().replace(/\s+/g, '.');
+                    const role = (el.getAttribute && el.getAttribute('role')) || '';
+                    return `${tag}${id ? `#${id}` : ''}${cls ? `.${cls}` : ''}${role ? `[role="${role}"]` : ''}`;
+                  };
+
                   const isConsentPopup = (el) => {
                     if (!el) return false;
                     const title = (el.querySelector('h1, h2, h3, [class*="title"]') || {}).textContent || '';
@@ -1793,7 +1812,7 @@ jobs:
                   const clickCloseButtons = (root) => {
                     const buttons = root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : [];
                     buttons.forEach(btn => {
-                      if (isZedgeUI(btn) || !isVisible(btn)) return;
+                      if (isZedgeOwnedModal(btn) || !isVisible(btn)) return;
                       const label = ((btn.textContent || '') + ' ' + (btn.getAttribute('aria-label') || '') + ' ' + (btn.getAttribute('title') || '')).toLowerCase();
                       const classes = `${btn.className || ''} ${btn.id || ''}`.toLowerCase();
                       if (!/close|dismiss|not now|no thanks|skip|got it|agree|accept|allow|disagree/.test(label + ' ' + classes)) return;
@@ -1837,7 +1856,10 @@ jobs:
                           el.matches?.('[role="dialog"], [role="alertdialog"], dialog[open]') ||
                           /modal|popup|overlay|banner|notice|cookie|consent|privacy|dialog/.test(cls);
                       }).forEach(el => {
-                        if (isZedgeUI(el)) return;
+                        if (isZedgeOwnedModal(el)) {
+                          console.log(`↷ Skip Zedge-owned modal: ${describeNode(el)}`);
+                          return;
+                        }
                         if ((el.tagName || '').toLowerCase() === 'iframe') {
                           const src = (el.src || '').toLowerCase();
                           if (src.includes('zedge')) return;
@@ -1845,6 +1867,7 @@ jobs:
                         if (looksLikePopup(el)) {
                           const root = getPopupRoot(el);
                           clickCloseButtons(root);
+                          console.log(`🧹 Removed popup root: ${describeNode(root)}`);
                           root.remove();
                         }
                       });
@@ -1854,7 +1877,10 @@ jobs:
                         '[class*="modal"], [class*="popup"], [class*="overlay"], ' +
                         '[class*="banner"], [class*="notice"], [class*="cookie"], [class*="consent"], [class*="privacy"]'
                       ).forEach(el => {
-                        if (isZedgeUI(el)) return;
+                        if (isZedgeOwnedModal(el)) {
+                          console.log(`↷ Skip Zedge-owned modal: ${describeNode(el)}`);
+                          return;
+                        }
                         if (el.tagName === 'IFRAME') {
                           const src = (el.src || '').toLowerCase();
                           if (src.includes('zedge')) return;
@@ -1862,6 +1888,7 @@ jobs:
                         if (looksLikePopup(el)) {
                           const root = getPopupRoot(el);
                           clickCloseButtons(root);
+                          console.log(`🧹 Removed popup root: ${describeNode(root)}`);
                           root.remove();
                         }
                       });
