@@ -1696,6 +1696,15 @@ jobs:
                     return hasWorkflowWords || hasWorkflowControls;
                   };
 
+                  const isInsideZedgeOwnedModal = (el) => {
+                    let cur = el;
+                    for (let i = 0; i < 8 && cur; i++) {
+                      if (isZedgeOwnedModal(cur)) return true;
+                      cur = cur.parentElement;
+                    }
+                    return false;
+                  };
+
                   const describeNode = (el) => {
                     if (!el) return 'unknown';
                     const tag = (el.tagName || '').toLowerCase();
@@ -1838,10 +1847,10 @@ jobs:
                   const clickCloseButtons = (root) => {
                     const buttons = root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : [];
                     buttons.forEach(btn => {
-                      if (isZedgeOwnedModal(btn) || btn.closest?.('[data-hook]') || !isVisible(btn)) return;
+                      if (isInsideZedgeOwnedModal(btn) || btn.closest?.('[data-hook]') || !isVisible(btn)) return;
                       const label = ((btn.textContent || '') + ' ' + (btn.getAttribute('aria-label') || '') + ' ' + (btn.getAttribute('title') || '')).toLowerCase();
                       const classes = `${btn.className || ''} ${btn.id || ''}`.toLowerCase();
-                      if (!/close|dismiss|not now|no thanks|skip|got it|agree|accept|allow|disagree/.test(label + ' ' + classes)) return;
+                      if (!/close|dismiss|not now|no thanks|skip|got it/.test(label + ' ' + classes)) return;
                       try { btn.click(); } catch (e) {}
                     });
                   };
