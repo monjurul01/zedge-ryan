@@ -1131,7 +1131,43 @@ jobs:
                   const visible = await btn.isVisible({ timeout: 300 }).catch(() => false);
                   if (!visible) continue;
                   const isZedge = await btn.evaluate(el => {
-                    return !!el.closest('[data-hook]') || el.closest('form');
+                    const workflowWords = [
+                      'upload ringtones',
+                      'upload',
+                      'edit meta',
+                      'edit metadata',
+                      'metadata',
+                      'profile',
+                      'profiles',
+                      'content type',
+                      'wallpaper',
+                      'ringtone',
+                      'audio',
+                      'file',
+                      'title',
+                      'tags',
+                      'category',
+                      'description',
+                      'drag and drop or browse',
+                      'we accept only mp3 files',
+                      'we accept only mp3 files and max 8 mb',
+                      'max 8 mb'
+                    ];
+                    let cur = el;
+                    for (let i = 0; i < 8 && cur; i++) {
+                      const text = (cur.textContent || '').toLowerCase();
+                      const cls = (cur.className || '').toString().toLowerCase();
+                      if (
+                        !!cur.closest?.('[data-hook]') ||
+                        !!cur.querySelector?.('input[type="file"], input[type="email"], input[type="password"], button[type="submit"]') ||
+                        workflowWords.some(k => text.includes(k)) ||
+                        /upload|edit meta|edit metadata|metadata|profile|profiles|content type|wallpaper|ringtone|audio|file|title|tags|category|description|drag and drop or browse|max 8 mb/.test(text + ' ' + cls)
+                      ) {
+                        return true;
+                      }
+                      cur = cur.parentElement;
+                    }
+                    return false;
                   }).catch(() => true);
                   if (isZedge) continue;
                   await btn.click({ timeout: 1000 }).catch(() => {});
@@ -1986,7 +2022,6 @@ jobs:
               const killerMaxWait = 8000; // 8 seconds max wait
 
               const modalSelectors = [
-                'button:has-text("Close")',
                 'button:has-text("Do not Share or Sell my Personal Information")',
                 'button:has-text("Accept All Cookies")',
                 'button:has-text("Accept All")',
@@ -1996,8 +2031,6 @@ jobs:
                 'button:has-text("OK")',
                 'button:has-text("Got it")',
                 'button:has-text("Dismiss")',
-                '[role="dialog"] button:has-text("Close")',
-                '[role="alertdialog"] button:has-text("Close")',
               ];
 
               while (Date.now() - killerStart < killerMaxWait) {
