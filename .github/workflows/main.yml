@@ -1665,9 +1665,35 @@ jobs:
                     const root = el.querySelector ? el : el.closest?.('dialog, [role="dialog"], [role="alertdialog"], [class*="modal"], [class*="popup"], [class*="overlay"]');
                     const scope = root || el;
                     if (!scope || !scope.querySelector) return false;
-                    return !!scope.querySelector(
-                      'form, input, textarea, select, button[type="submit"], input[type="file"], input[type="email"], input[type="password"]'
+                    const text = (scope.textContent || '').toLowerCase();
+                    const hasWorkflowWords = [
+                      'upload ringtones',
+                      'upload',
+                      'edit meta',
+                      'edit metadata',
+                      'metadata',
+                      'profile',
+                      'profiles',
+                      'content type',
+                      'wallpaper',
+                      'ringtone',
+                      'audio',
+                      'file',
+                      'title',
+                      'tags',
+                      'category',
+                      'description',
+                      'drag and drop or browse',
+                      'we accept only mp3 files',
+                      'we accept only mp3 files and max 8 mb',
+                      'max 8 mb'
+                    ].some(k => text.includes(k));
+                    const hasWorkflowControls = !!scope.querySelector(
+                      'form, input, textarea, select, button[type="submit"], button[data-hook], ' +
+                      'input[type="file"], input[type="email"], input[type="password"], ' +
+                      '.react-select__input, .react-select, [data-hook*="form"], [data-hook*="meta"], [data-hook*="profile"], [data-hook*="upload"]'
                     );
+                    return hasWorkflowWords || hasWorkflowControls;
                   };
 
                   const describeNode = (el) => {
@@ -1812,7 +1838,7 @@ jobs:
                   const clickCloseButtons = (root) => {
                     const buttons = root.querySelectorAll ? root.querySelectorAll('button, [role="button"]') : [];
                     buttons.forEach(btn => {
-                      if (isZedgeOwnedModal(btn) || !isVisible(btn)) return;
+                      if (isZedgeOwnedModal(btn) || btn.closest?.('[data-hook]') || !isVisible(btn)) return;
                       const label = ((btn.textContent || '') + ' ' + (btn.getAttribute('aria-label') || '') + ' ' + (btn.getAttribute('title') || '')).toLowerCase();
                       const classes = `${btn.className || ''} ${btn.id || ''}`.toLowerCase();
                       if (!/close|dismiss|not now|no thanks|skip|got it|agree|accept|allow|disagree/.test(label + ' ' + classes)) return;
