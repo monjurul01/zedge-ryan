@@ -1497,20 +1497,41 @@ jobs:
               context.setDefaultTimeout(0);
               context.setDefaultNavigationTimeout(0);
 
-              // ── BLOCK only third-party consent CMP scripts ──────────────
+              // ── BLOCK third-party ads, trackers, popups, CMP scripts ──
               await context.route('**/*', (route) => {
                 const url = route.request().url().toLowerCase();
                 if (url.includes('zedge.net') || url.includes('zedge.')) {
                   return route.continue();
                 }
-                const thirdPartyCMPs = [
+                const blockedDomains = [
+                  // CMP / Consent
                   'sourcepoint.', 'onetrust.com', 'cookiebot.com', 'quantcast.com',
                   'trustarc.com', 'osano.com', 'termly.io', 'cookieyes.com',
                   'complianz.io', 'usercentrics.com', 'didomi.io', 'axeptio.com',
-                  'klaro.org', 'iubenda.com', 'consentmanager.net', 'consentframework.com'
+                  'klaro.org', 'iubenda.com', 'consentmanager.net', 'consentframework.com',
+                  // Ads
+                  'googlesyndication.com', 'googleadservices.com', 'doubleclick.net',
+                  'adservice.google.com', 'pagead2.googlesyndication.com',
+                  'adnxs.com', 'adsrvr.org', 'taboola.com', 'outbrain.com',
+                  'criteo.com', 'criteo.net', 'spotxchange.com', 'pubmatic.com',
+                  'rubiconproject.com', 'openx.net', 'casalemedia.com',
+                  // Tracking / Analytics
+                  'facebook.com/tr', 'connect.facebook.net', 'analytics.google.com',
+                  'googletagmanager.com', 'googletagservices.com',
+                  'hotjar.com', 'mouseflow.com', 'fullstory.com',
+                  'sentry.io', 'bugsnag.com', 'newrelic.com',
+                  // Popup / Overlay scripts
+                  'sumo.com', 'sumome.com', 'optinmonster.com',
+                  'popupsmart.com', 'wisepops.com', 'hellobar.com',
+                  'privy.com', 'convertflow.com', 'typeform.com',
+                  // Generic ad/tracking patterns
+                  '/ads/', '/ad/', '/advert/', '/tracking/', '/pixel.'
                 ];
-                if (thirdPartyCMPs.some(d => url.includes(d))) {
-                  console.log(`🚫 Blocked CMP: ${url.slice(0, 80)}`);
+                if (blockedDomains.some(d => url.includes(d))) {
+                  return route.abort();
+                }
+                const resType = route.request().resourceType();
+                if (['image', 'media', 'font'].includes(resType) && url.includes('ad')) {
                   return route.abort();
                 }
                 return route.continue();
@@ -1682,6 +1703,127 @@ jobs:
                   if (window.__consentAutoKillerInstalled) return;
                   window.__consentAutoKillerInstalled = true;
 
+                  // ── CSS INJECTION: hide modal/overlay/popup BEFORE they render ──
+                  const css = document.createElement('style');
+                  css.id = '__modalBlocker';
+                  css.textContent = `
+                    [class*="onetrust"], [id*="onetrust"],
+                    [class*="cookiebot"], [id*="cookiebot"],
+                    [class*="cookie-consent"], [class*="cookieconsent"],
+                    [class*="consent-banner"], [class*="consent-modal"],
+                    [class*="quantcast"], [id*="quantcast"],
+                    [class*="sourcepoint"], [id*="sourcepoint"],
+                    [class*="trustarc"], [id*="trustarc"],
+                    [class*="osano"], [id*="osano"],
+                    [class*="didomi"], [id*="didomi"],
+                    [class*="axeptio"], [id*="axeptio"],
+                    [class*="klaro"], [id*="klaro"],
+                    [class*="iubenda"], [id*="iubenda"],
+                    [class*="termly"], [id*="termly"],
+                    [class*="complianz"], [id*="complianz"],
+                    [class*="usercentrics"], [id*="usercentrics"],
+                    [class*="cookieyes"], [id*="cookieyes"],
+                    [class*="consentmanager"], [id*="consentmanager"],
+                    [id*="cmpbox"], [id*="cmpbox2"],
+                    .fc-dialog-overlay, .fc-consent-root,
+                    #notice, #cookie-notice, #cookie-law-info-bar,
+                    [class*="cc-banner"], [class*="cc-window"],
+                    [aria-label="cookieconsent"],
+                    [class*="sumo"], [class*="optinmonster"],
+                    [class*="popup-overlay"], [class*="modal-overlay"]:not([data-hook]),
+                    [class*="backdrop"]:not([data-hook]):not([class*="zedge"]),
+                    [class*="privacy"], [class*="cookie-banner"],
+                    [class*="cmp-container"], [class*="cmp-box"], [class*="cmp-modal"],
+                    [id*="cmp"], [id*="consent"]
+                  { display: none !important; visibility: hidden !important; pointer-events: none !important; }
+                  body, html { overflow: auto !important; }
+                  `;
+                  (document.head || document.documentElement).appendChild(css);
+                  console.log('🛡️ Modal/overlay CSS blocker injected');
+
+                  // ── OVERRIDE CMP API — tell them consent is ALREADY given ──
+                  window.__tcfapi = function(command, version, callback) {
+                    if (command === 'getTCData') {
+                      callback({
+                        tcString: 'CQJzZgAQJzZgAAHABBENBfFgAP_gAEPgACiQKNNB7G7eTWlBeXp',
+                        cmpId: 1, cmpVersion: 1, gdprApplies: true,
+                        tcfPolicyVersion: 2, isServiceSpecific: true,
+                        useNonStandardStacks: false,
+                        purpose: { consents: { 1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true }, legitimateInterests: { 1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true } },
+                        vendor: { consents: {}, legitimateInterests: {} },
+                        eventStatus: 'tcloaded', cmpStatus: 'loaded'
+                      }, true);
+                    } else if (command === 'ping') {
+                      callback({ cmpStatus: 'loaded', cmpId: 1, eventStatus: 'tcloaded' });
+                    } else if (command === 'addEventListener') {
+                      callback({ tcString: 'CQJzZgAQJzZgAAHABBENBfFgAP_gAEPgACiQKNNB7G7eTWlBeXp', eventStatus: 'tcloaded', cmpStatus: 'loaded' }, true);
+                    } else if (command === 'removeEventListener') {
+                      callback({}, true);
+                    }
+                  };
+                  window.__cmp = function(command, version, callback) {
+                    callback({ gdprApplies: true, consentData: 'CQJzZgAQJzZgAAHABBENBfFgAP_gAEPgACiQKNNB7G7eTWlBeXp' }, true);
+                  };
+                  window.OneTrust = window.OneTrust || {};
+                  window.OneTrust.OnConsentChanged = () => {};
+                  window.Optanon = window.Optanon || {};
+                  window.Optanon.GetDomainData = () => ({ Groups: [] });
+                  window.CookieConsent = window.CookieConsent || {};
+                  window.CookieConsent.running = false;
+                  window.CookieConsent.visible = false;
+
+                  // ── MutationObserver: KILL consent popup the INSTANT it appears ──
+                  const killConsentNow = () => {
+                    document.querySelectorAll('div, section, aside, dialog').forEach(el => {
+                      if (el.closest && el.closest('[data-hook]')) return;
+                      if (el.querySelector && el.querySelector('[data-hook]')) return;
+                      if (el.querySelector && el.querySelector('input[type="file"], input[type="email"], input[type="password"]')) return;
+                      if (el.querySelector && el.querySelector('button[type="submit"]')) return;
+                      if (el.querySelector && el.querySelector('.react-select__input')) return;
+                      const cls = (el.className || '').toString().toLowerCase();
+                      if (cls.includes('sc-') || cls.includes('styled-')) return;
+                      const text = (el.textContent || '').toLowerCase();
+                      const isConsent = (
+                        (text.includes('consent management') && text.includes('we and our partners')) ||
+                        text.includes('we collect some sensitive') ||
+                        text.includes('do not share or sell')
+                      );
+                      if (isConsent) {
+                        el.remove();
+                        document.body.style.overflow = '';
+                        document.documentElement.style.overflow = '';
+                        console.log('🧹 Killed consent popup');
+                      }
+                    });
+                    document.querySelectorAll('[class*="backdrop"], [class*="overlay"]').forEach(el => {
+                      if (el.closest && el.closest('[data-hook]')) return;
+                      const style = window.getComputedStyle(el);
+                      if (style.position === 'fixed' && style.zIndex > 999) {
+                        el.remove();
+                      }
+                    });
+                  };
+                  killConsentNow();
+                  const consentObserver = new MutationObserver(killConsentNow);
+                  consentObserver.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+
+                  // Block Zedge privacy popup permanently via localStorage
+                  try {
+                    localStorage.setItem('privacyNoticeDismissed', 'true');
+                    localStorage.setItem('privacyConsent', 'all');
+                    localStorage.setItem('cookieConsent', 'accepted');
+                    localStorage.setItem('dataConsent', 'accepted');
+                    localStorage.setItem('privacyAccepted', 'true');
+                    localStorage.setItem('gdprAccepted', 'true');
+                    localStorage.setItem('consentGiven', 'true');
+                    localStorage.setItem('trackingConsent', 'true');
+                    localStorage.setItem('marketingConsent', 'true');
+                    localStorage.setItem('analyticsConsent', 'true');
+                    sessionStorage.setItem('privacyNoticeDismissed', 'true');
+                    sessionStorage.setItem('privacyPopupClosed', 'true');
+                  } catch (e) {}
+                })();
+
                   const CONSENT_TITLE = 'consent management';
                   const CONSENT_BODY = 'we and our partners place cookies';
                   const CMP_KEYWORDS = ['onetrust', 'cookiebot', 'quantcast', 'sourcepoint', 'cookieconsent', 'cmp'];
@@ -1690,8 +1832,24 @@ jobs:
                     if (!el) return false;
                     if (el.closest && el.closest('[data-hook]')) return true;
                     if (el.querySelector && el.querySelector('[data-hook]')) return true;
-                    if (el.querySelector && el.querySelector('input[type="file"], input[type="email"], input[type="password"]')) return true;
+                    if (el.querySelector && el.querySelector('input[type="file"], input[type="email"], input[type="password"], input[type="text"], textarea')) return true;
                     if (el.querySelector && el.querySelector('button[type="submit"]')) return true;
+                    const tag = (el.tagName || '').toLowerCase();
+                    if (tag === 'nav' || tag === 'header' || tag === 'footer') return true;
+                    if (el.closest && (el.closest('nav') || el.closest('header') || el.closest('footer'))) return true;
+                    if (el.querySelector && el.querySelector('nav, [role="navigation"], [role="menubar"], [role="tablist"]')) return true;
+                    const cls = (el.className || '').toString().toLowerCase();
+                    if (cls.includes('zedge') || cls.includes('sc-') || cls.includes('styled-')) return true;
+                    const text = (el.textContent || '').toLowerCase().slice(0, 2000);
+                    const zedgeKeywords = [
+                      'upload', 'profile', 'profiles', 'publish', 'metadata', 'edit meta',
+                      'wallpaper', 'ringtone', 'audio', 'content type', 'title', 'tags',
+                      'category', 'description', 'drag and drop', 'browse', 'file',
+                      'dashboard', 'reports', 'payments', 'revenue',
+                      'video ad', 'lock type', 'do not share', 'privacy policy'
+                    ];
+                    if (zedgeKeywords.some(k => text.includes(k))) return true;
+                    if (el.querySelector && el.querySelector('.react-select__input, .react-select')) return true;
                     return false;
                   };
 
@@ -1762,6 +1920,21 @@ jobs:
                   };
 
                   const tryAutoKill = () => {
+                    // 0. Close Zedge's own privacy/consent popup
+                    document.querySelectorAll('button').forEach(btn => {
+                      const label = (btn.textContent || '').toLowerCase().trim();
+                      if (label === 'close') {
+                        const dialog = btn.closest('[role="dialog"], [class*="modal"], [class*="popup"], [class*="overlay"]') || btn.parentElement?.parentElement;
+                        if (dialog) {
+                          const text = (dialog.textContent || '').toLowerCase();
+                          if (text.includes('we collect some sensitive') || text.includes('do not share or sell') || text.includes('privacy policy')) {
+                            btn.click();
+                            console.log('🧹 Closed Zedge privacy popup');
+                          }
+                        }
+                      }
+                    });
+
                     document.querySelectorAll('iframe').forEach(iframe => {
                       if (isZedgeUI(iframe)) return;
                       const src = (iframe.src || '').toLowerCase();
@@ -1831,8 +2004,24 @@ jobs:
                     if (!el) return false;
                     if (el.closest && el.closest('[data-hook]')) return true;
                     if (el.querySelector && el.querySelector('[data-hook]')) return true;
-                    if (el.querySelector && el.querySelector('input[type="file"], input[type="email"], input[type="password"]')) return true;
+                    if (el.querySelector && el.querySelector('input[type="file"], input[type="email"], input[type="password"], input[type="text"], textarea')) return true;
                     if (el.querySelector && el.querySelector('button[type="submit"]')) return true;
+                    const tag = (el.tagName || '').toLowerCase();
+                    if (tag === 'nav' || tag === 'header' || tag === 'footer') return true;
+                    if (el.closest && (el.closest('nav') || el.closest('header') || el.closest('footer'))) return true;
+                    if (el.querySelector && el.querySelector('nav, [role="navigation"], [role="menubar"], [role="tablist"]')) return true;
+                    const cls = (el.className || '').toString().toLowerCase();
+                    if (cls.includes('zedge') || cls.includes('sc-') || cls.includes('styled-')) return true;
+                    const text = (el.textContent || '').toLowerCase().slice(0, 2000);
+                    const zedgeKeywords = [
+                      'upload', 'profile', 'profiles', 'publish', 'metadata', 'edit meta',
+                      'wallpaper', 'ringtone', 'audio', 'content type', 'title', 'tags',
+                      'category', 'description', 'drag and drop', 'browse', 'file',
+                      'dashboard', 'reports', 'payments', 'revenue',
+                      'video ad', 'lock type', 'do not share', 'privacy policy'
+                    ];
+                    if (zedgeKeywords.some(k => text.includes(k))) return true;
+                    if (el.querySelector && el.querySelector('.react-select__input, .react-select')) return true;
                     return false;
                   };
 
@@ -1849,34 +2038,28 @@ jobs:
                     const style = window.getComputedStyle(el);
                     const z = parseInt(style.zIndex || '0', 10) || 0;
                     const isFixed = style.position === 'fixed';
-                    const isAbsolute = style.position === 'absolute';
                     const isDialog = el.matches('[role="dialog"], [role="alertdialog"], dialog[open]');
-                    const hasPopupClass = /modal|popup|overlay|dialog|banner|notice|cookie|consent|privacy/i.test(
-                      `${el.className || ''} ${el.id || ''}`
+                    const cls = (el.className || '').toString().toLowerCase();
+                    const id = (el.id || '').toLowerCase();
+                    const hasPopupClass = /onetrust|cookiebot|quantcast|sourcepoint|consent|cookie-consent|cmp|trustarc|osano|didomi|axeptio|klaro|iubenda|termly|complianz|usercentrics|cookieyes|consentmanager|sumo|optinmonster|popupsmart|wisepops/i.test(
+                      `${cls} ${id}`
                     );
                     const text = (el.textContent || '').toLowerCase();
                     const consentPhrases = [
                       'consent management',
                       'we and our partners place cookies',
                       'you may accept all or part of these operations',
-                      'privacy policy',
                       'manage consent',
-                      'your privacy choices'
+                      'your privacy choices',
+                      'cookie policy',
+                      'privacy & cookies',
+                      'we use cookies',
+                      'this website uses cookies',
+                      'accept all cookies',
+                      'cookie settings'
                     ];
-                    const hasDismissText = [
-                      'close',
-                      'dismiss',
-                      'not now',
-                      'no thanks',
-                      'skip',
-                      'got it',
-                      'accept',
-                      'agree',
-                      'allow',
-                      'disagree'
-                    ].some(k => text.includes(k));
                     const hasConsentPhrase = consentPhrases.some(k => text.includes(k));
-                    return isDialog || hasPopupClass || (isFixed && z >= 50) || (isAbsolute && z >= 50) || hasDismissText || hasConsentPhrase;
+                    return isDialog || hasPopupClass || hasConsentPhrase || (isFixed && z >= 100);
                   };
 
                   const clickCloseButtons = (root) => {
@@ -1917,40 +2100,47 @@ jobs:
 
                   const kill = () => {
                     try {
+                      // Close Zedge privacy popup first
+                      document.querySelectorAll('button').forEach(btn => {
+                        const label = (btn.textContent || '').toLowerCase().trim();
+                        if (label === 'close') {
+                          const dialog = btn.closest('[role="dialog"], [class*="modal"], [class*="popup"], [class*="overlay"]') || btn.parentElement?.parentElement;
+                          if (dialog) {
+                            const text = (dialog.textContent || '').toLowerCase();
+                            if (text.includes('we collect some sensitive') || text.includes('do not share or sell') || text.includes('privacy policy')) {
+                              btn.click();
+                              console.log('🧹 Closed Zedge privacy popup');
+                            }
+                          }
+                        }
+                      });
+
                       clickCloseButtons(document);
 
                       collectDeepElements(document.documentElement).filter(el => {
                         const tag = (el.tagName || '').toLowerCase();
                         const cls = `${el.className || ''} ${el.id || ''}`.toLowerCase();
-                        return tag === 'iframe' ||
-                          el.matches?.('[role="dialog"], [role="alertdialog"], dialog[open]') ||
-                          /modal|popup|overlay|banner|notice|cookie|consent|privacy|dialog/.test(cls);
-                      }).forEach(el => {
-                        if (isZedgeOwnedModal(el)) {
-                          console.log(`↷ Skip Zedge-owned modal: ${describeNode(el)}`);
-                          return;
-                        }
-                        if ((el.tagName || '').toLowerCase() === 'iframe') {
+                        if (isZedgeUI(el)) return false;
+                        if (tag === 'iframe') {
                           const src = (el.src || '').toLowerCase();
-                          if (src.includes('zedge')) return;
+                          return !src.includes('zedge');
                         }
-                        if (looksLikePopup(el)) {
-                          const root = getPopupRoot(el);
-                          clickCloseButtons(root);
-                          console.log(`🧹 Removed popup root: ${describeNode(root)}`);
-                          root.remove();
-                        }
+                        return /onetrust|cookiebot|quantcast|sourcepoint|consent|cmp|trustarc|osano|didomi|axeptio|klaro|sumo|optinmonster/.test(cls);
+                      }).forEach(el => {
+                        if (isZedgeOwnedModal(el)) return;
+                        const root = getPopupRoot(el);
+                        clickCloseButtons(root);
+                        console.log(`🧹 Removed popup: ${describeNode(root)}`);
+                        root.remove();
                       });
 
                       document.querySelectorAll(
-                        'iframe, [role="dialog"], [role="alertdialog"], dialog[open], ' +
-                        '[class*="modal"], [class*="popup"], [class*="overlay"], ' +
-                        '[class*="banner"], [class*="notice"], [class*="cookie"], [class*="consent"], [class*="privacy"]'
+                        'iframe, [class*="onetrust"], [class*="cookiebot"], [class*="quantcast"], ' +
+                        '[class*="sourcepoint"], [class*="consent"], [class*="cookie-consent"], ' +
+                        '[class*="cmp"], [class*="trustarc"], [class*="osano"], [class*="didomi"], ' +
+                        '[id*="onetrust"], [id*="cookiebot"], [id*="quantcast"], [id*="consent"], [id*="cmp"]'
                       ).forEach(el => {
-                        if (isZedgeOwnedModal(el)) {
-                          console.log(`↷ Skip Zedge-owned modal: ${describeNode(el)}`);
-                          return;
-                        }
+                        if (isZedgeUI(el) || isZedgeOwnedModal(el)) return;
                         if (el.tagName === 'IFRAME') {
                           const src = (el.src || '').toLowerCase();
                           if (src.includes('zedge')) return;
@@ -1958,7 +2148,7 @@ jobs:
                         if (looksLikePopup(el)) {
                           const root = getPopupRoot(el);
                           clickCloseButtons(root);
-                          console.log(`🧹 Removed popup root: ${describeNode(root)}`);
+                          console.log(`🧹 Removed popup: ${describeNode(root)}`);
                           root.remove();
                         }
                       });
