@@ -1822,7 +1822,6 @@ jobs:
                     sessionStorage.setItem('privacyNoticeDismissed', 'true');
                     sessionStorage.setItem('privacyPopupClosed', 'true');
                   } catch (e) {}
-                })();
 
                   const CONSENT_TITLE = 'consent management';
                   const CONSENT_BODY = 'we and our partners place cookies';
