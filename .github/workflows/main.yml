@@ -1,23 +1,18 @@
 name: Zedge Safe Automation + Realtime DB Wallpaper & Ringtone
 
 on:
+  schedule:
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
-      proxy_server:
-        description: "HTTP proxy host:port"
-        required: true
-      proxy_user:
-        description: "Proxy username"
-        required: false
-      proxy_pass:
-        description: "Proxy password"
-        required: false
       zedge_email:
         description: "Zedge email"
-        required: true
+        required: false
+        default: ""
       zedge_password:
         description: "Zedge password"
-        required: true
+        required: false
+        default: ""
       headless:
         description: "Run headless? true/false"
         required: true
@@ -296,30 +291,15 @@ jobs:
           const fs = require("fs");
           const path = require("path");
 
-          const proxyServer = process.env.PROXY_SERVER;
-          const proxyUser = process.env.PROXY_USER;
-          const proxyPass = process.env.PROXY_PASS;
           const zedgeEmail = process.env.ZEDGE_EMAIL;
           const zedgePassword = process.env.ZEDGE_PASSWORD;
           const isHeadless = process.env.HEADLESS === "true";
 
-          const firebaseDatabaseURL = process.env.FIREBASE_DATABASE_URL || "https://zedge-auto-publish-ed5e7-default-rtdb.firebaseio.com";
+          const firebaseDatabaseURL = process.env.FIREBASE_DATABASE_URL || "";
           const queuePath = "wallpaperQueue";
 
-          if (!proxyServer) throw new Error("Proxy server is required");
           if (!zedgeEmail) throw new Error("Zedge email is required");
           if (!zedgePassword) throw new Error("Zedge password is required");
-
-          const proxy = {
-            server: proxyServer.startsWith("http")
-              ? proxyServer
-              : `http://${proxyServer}`,
-          };
-
-          if (proxyUser && proxyPass) {
-            proxy.username = proxyUser;
-            proxy.password = proxyPass;
-          }
 
           async function firebaseGet(pathName) {
             const res = await fetch(`${firebaseDatabaseURL}/${pathName}.json`);
@@ -1467,7 +1447,6 @@ jobs:
               // 2. Start Browser ONCE for the whole run
               browser = await chromium.launch({
                 headless: isHeadless,
-                proxy,
                 args: [
                   "--no-sandbox",
                   "--disable-webrtc",
@@ -1481,6 +1460,21 @@ jobs:
                   `--window-size=${fpVP.width},${fpVP.height}`
                 ]
               });
+
+              // VPN alive check — kill bot instantly if VPN drops
+              const { execSync } = require("child_process");
+              const vpnPidFile = require("path").join(process.cwd(), "vpn.pid");
+              let vpnAlive = true;
+              const vpnCheck = setInterval(() => {
+                try {
+                  const pid = require("fs").readFileSync(vpnPidFile, "utf8").trim();
+                  execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: "utf8" });
+                } catch (e) {
+                  console.error("🚨 VPN DISCONNECTED! Shutting down immediately...");
+                  vpnAlive = false;
+                  process.exit(1);
+                }
+              }, 5000);
 
               const tz = await getProxyTimezone(browser);
 
@@ -2604,6 +2598,7 @@ jobs:
 
               console.log(`\n🏁 Run complete. ${successCount} upload(s) succeeded.`);
 
+              clearInterval(vpnCheck);
               clearInterval(consentBlocker);
               await context.close();
               await browser.close();
@@ -2617,12 +2612,40 @@ jobs:
           })();
           '@ | Set-Content bot.js
 
+      - name: Connect Proton VPN
+        shell: bash
+        run: |
+          choco install openvpn -y --allow-empty-checksums
+          OVPN_BIN="C:/Program Files/OpenVPN/bin/openvpn.exe"
+          if [ ! -f "$OVPN_BIN" ]; then OVPN_BIN="C:/Program Files (x86)/OpenVPN/bin/openvpn.exe"; fi
+          if [ ! -f "$OVPN_BIN" ]; then echo "OpenVPN binary not found"; exit 1; fi
+          echo "OpenVPN: $OVPN_BIN"
+
+          printf '%s\n%s' "$VPN_USERNAME" "$VPN_PASSWORD" > auth.txt
+
+          printf '%s' "$VPN_CONFIG" > proton.ovpn
+          sed -i 's/^auth-user-pass$/auth-user-pass auth.txt/' proton.ovpn
+
+          log="$RUNNER_TEMP/vpn.log"
+          "$OVPN_BIN" --config proton.ovpn --log "$log" &
+          VPN_PID=$!
+          echo $VPN_PID > vpn.pid
+          echo "Waiting for VPN connection... (PID: $VPN_PID)"
+          sleep 20
+          if ! ps -p $VPN_PID > /dev/null 2>&1; then
+            echo "OpenVPN exited prematurely. Log:"
+            tail -30 "$log" 2>/dev/null
+            exit 1
+          fi
+          echo "VPN connected successfully (PID: $VPN_PID)"
+        env:
+          VPN_CONFIG: ${{ secrets.VPN_CONFIG }}
+          VPN_USERNAME: ${{ secrets.VPN_USERNAME }}
+          VPN_PASSWORD: ${{ secrets.VPN_PASSWORD }}
+
       - name: Run bot
         shell: pwsh
         env:
-          PROXY_SERVER: ${{ github.event.inputs.proxy_server }}
-          PROXY_USER: ${{ github.event.inputs.proxy_user }}
-          PROXY_PASS: ${{ github.event.inputs.proxy_pass }}
           ZEDGE_EMAIL: ${{ github.event.inputs.zedge_email }}
           ZEDGE_PASSWORD: ${{ github.event.inputs.zedge_password }}
           HEADLESS: ${{ github.event.inputs.headless }}
