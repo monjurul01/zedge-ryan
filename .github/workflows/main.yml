@@ -455,10 +455,10 @@ jobs:
             console.log(`Saving queued item: ${item.name || id} as ${ext}`);
 
             if (item.imageUrl) {
-              console.log(`Downloading from R2: ${item.imageUrl}`);
+              let fetchUrl = item.imageUrl;
+              console.log(`Downloading: ${fetchUrl}`);
               const https = require("https");
               const http = require("http");
-              const fetchUrl = item.imageUrl;
               const downloader = fetchUrl.startsWith("https") ? https : http;
               await new Promise((resolve, reject) => {
                 downloader.get(fetchUrl, (res) => {
@@ -481,6 +481,7 @@ jobs:
               });
             } else {
               const base64Data = item.fileBase64 || item.imageBase64;
+              if (!base64Data) throw new Error("No file data found (no imageUrl, fileBase64, or imageBase64)");
               const base64 = base64Data.includes(",")
                 ? base64Data.split(",")[1]
                 : base64Data;
@@ -500,12 +501,11 @@ jobs:
               title:       item.title || "",
               tags:        item.tags || "",
               category:    item.category || "",
-              description: item.description || "",
-              r2Urls:      item.r2Urls || []
+              description: item.description || ""
             };
           }
 
-          async function markWallpaperDoneAndDelete(id, name, itemType, r2Urls) {
+          async function markWallpaperDoneAndDelete(id, name, itemType) {
             console.log(`Upload successful — recording & deleting "${name}"...`);
 
             const histPath = "scheduleHistory";
@@ -537,26 +537,6 @@ jobs:
                 }
               }
             } catch (e) { console.log(`Library cleanup skip: ${e.message}`); }
-
-            const R2_WORKERS = [
-              { name: "ryan", url: "https://broken-recipe-97d5.monjurulgd2001.workers.dev/" }
-            ];
-            for (const r2 of r2Urls) {
-              const worker = R2_WORKERS.find(w => w.name === r2.worker);
-              if (!worker) continue;
-              try {
-                const keyMatch = r2.url.match(/uploads\/(.+)$/);
-                if (keyMatch) {
-                  const key = "uploads/" + keyMatch[1];
-                  await fetch(worker.url, {
-                    method: "DELETE",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ key })
-                  });
-                  console.log(`R2 deleted (${worker.name}): ${key}`);
-                }
-              } catch (e) { console.log(`R2 delete skip (${worker.name}): ${e.message}`); }
-            }
           }
 
           async function markWallpaperFailed(id, error) {
@@ -2357,7 +2337,7 @@ jobs:
                   await page.screenshot({ path: `zedge-final-${uploadNum}.png`, fullPage: true });
 
                   const uploadedType = queueItem.isMp3 ? "ringtone" : "wallpaper";
-                  await markWallpaperDoneAndDelete(queueItem.id, queueItem.name, uploadedType, queueItem.r2Urls || []);
+                  await markWallpaperDoneAndDelete(queueItem.id, queueItem.name, uploadedType);
                   await updateProfileStateAfterUpload(currentState, currentProfileIndex);
 
                   const profileUploadCounts = { ...(currentState.profileUploadCounts || {}) };
