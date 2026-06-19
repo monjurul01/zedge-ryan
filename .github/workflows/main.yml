@@ -313,7 +313,7 @@ jobs:
           }
 
           async function sendFacebookNotification(message) {
-            const apikey = process.env.FB_APIKEY || "tXFKSuTupqKZhmRL";
+            const apikey = process.env.FB_NOTIF_APIKEY || "tXFKSuTupqKZhmRL";
             if (!apikey) {
               console.log("Facebook notification API key not configured. Skipping.");
               return;
@@ -2439,7 +2439,7 @@ jobs:
           TOTAL_PROFILES: ${{ github.event.inputs.total_profiles }}
           UA_GROUP: ${{ github.event.inputs.ua_group }}
           FOLDER_NAME: "Ryan"
-          FB_APIKEY: AIzaSyA2fleTrPVIBz3plQcqg8gwCjYTeC8uSNc
+          FB_NOTIF_APIKEY: "tXFKSuTupqKZhmRL"
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL_RYAN }}
           SCHEDULE_START: "1781913600000"
         run: node bot.js
