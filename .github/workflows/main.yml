@@ -1,8 +1,6 @@
 name: Zedge Ryan Automation
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       zedge_email:
