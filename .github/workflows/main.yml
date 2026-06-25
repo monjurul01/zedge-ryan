@@ -495,6 +495,7 @@ jobs:
               id,
               localFile,
               isMp3,
+              imageUrl: item.imageUrl || "",
               name:        item.name || id,
               title:       item.title || "",
               tags:        item.tags || "",
@@ -503,7 +504,52 @@ jobs:
             };
           }
 
-          async function markWallpaperDoneAndDelete(id, name, itemType) {
+          async function deleteFromR2(imageUrl) {
+            if (!imageUrl) return;
+            try {
+              const r2Endpoint = process.env.R2_ENDPOINT || "";
+              const r2Bucket = process.env.R2_BUCKET || "";
+              const r2AccessKey = process.env.R2_ACCESS_KEY || "";
+              const r2SecretKey = process.env.R2_SECRET_KEY || "";
+              if (!r2Endpoint || !r2Bucket || !r2AccessKey || !r2SecretKey) { console.log("R2 creds not set — skipping R2 delete"); return; }
+
+              const publicBase = process.env.R2_PUBLIC_BASE || "";
+              let key = "";
+              if (publicBase && imageUrl.startsWith(publicBase)) {
+                key = imageUrl.slice(publicBase.length + 1);
+              } else {
+                const u = new URL(imageUrl);
+                key = u.pathname.slice(1);
+              }
+              if (!key) { console.log("Could not extract R2 key from URL"); return; }
+
+              const now = new Date();
+              const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, "");
+              const amzDate = dateStamp + "T" + now.toISOString().slice(11, 19).replace(/:/g, "") + "Z";
+              const host = new URL(r2Endpoint).host;
+              const canonicalUri = `/${r2Bucket}/${key}`;
+              const payloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+              const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+              const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
+              const canonicalRequest = ["DELETE", canonicalUri, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
+              const encoder = new TextEncoder();
+              const crHashBuf = await crypto.subtle.digest("SHA-256", encoder.encode(canonicalRequest));
+              const crHash = Array.from(new Uint8Array(crHashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+              const credScope = `${dateStamp}/auto/s3/aws4_request`;
+              const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credScope}\n${crHash}`;
+              async function h256(k, d) { const ik = await crypto.subtle.importKey("raw", typeof k==="string"?encoder.encode(k):k, {name:"HMAC",hash:"SHA-256"}, false, ["sign"]); return new Uint8Array(await crypto.subtle.sign("HMAC", ik, encoder.encode(d))); }
+              const kD = await h256("AWS4"+r2SecretKey, dateStamp); const kR = await h256(kD, "auto"); const kS = await h256(kR, "s3"); const kSign = await h256(kS, "aws4_request");
+              const sigBytes = await h256(kSign, stringToSign);
+              const signature = Array.from(sigBytes).map(b=>b.toString(16).padStart(2,"0")).join("");
+              const auth = `AWS4-HMAC-SHA256 Credential=${r2AccessKey}/${credScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+              const res = await fetch(`${r2Endpoint}${canonicalUri}`, { method: "DELETE", headers: { "Host": host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, "Authorization": auth } });
+              if (res.ok || res.status === 404) console.log(`R2 deleted: ${key}`);
+              else console.log(`R2 delete failed (${res.status}): ${await res.text().catch(()=>"")}`);
+            } catch (e) { console.log(`R2 delete skip: ${e.message}`); }
+          }
+
+          async function markWallpaperDoneAndDelete(id, name, itemType, imageUrl) {
             console.log(`Upload successful — recording & deleting "${name}"...`);
 
             const histPath = "scheduleHistory";
@@ -535,6 +581,8 @@ jobs:
                 }
               }
             } catch (e) { console.log(`Library cleanup skip: ${e.message}`); }
+
+            await deleteFromR2(imageUrl);
           }
 
           async function markWallpaperFailed(id, error) {
@@ -2335,7 +2383,7 @@ jobs:
                   await page.screenshot({ path: `zedge-final-${uploadNum}.png`, fullPage: true });
 
                   const uploadedType = queueItem.isMp3 ? "ringtone" : "wallpaper";
-                  await markWallpaperDoneAndDelete(queueItem.id, queueItem.name, uploadedType);
+                  await markWallpaperDoneAndDelete(queueItem.id, queueItem.name, uploadedType, queueItem.imageUrl);
                   await updateProfileStateAfterUpload(currentState, currentProfileIndex);
 
                   const profileUploadCounts = { ...(currentState.profileUploadCounts || {}) };
@@ -2440,6 +2488,11 @@ jobs:
           FB_NOTIF_APIKEY: "tXFKSuTupqKZhmRL"
           FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL_RYAN }}
           SCHEDULE_START: "1781913600000"
+          R2_ENDPOINT: "https://cfdb17806106859c12633d49f6260ca6.r2.cloudflarestorage.com"
+          R2_BUCKET: "zedgeryan"
+          R2_ACCESS_KEY: "c8e47e759737bfdf6259fe1491caeafb"
+          R2_SECRET_KEY: "34fbe80f95ceba287b506415af2f848de9af6eb50f6feb1300927451f5a3da80"
+          R2_PUBLIC_BASE: "https://broken-recipe-97d5.monjurulgd2001.workers.dev"
         run: node bot.js
 
       - name: Upload artifacts
