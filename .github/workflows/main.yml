@@ -1,4 +1,4 @@
-name: Zedge Ryan Automation
+name: Zedge Automation-WireGuard VPN-Wallpaper+Ringtone Schedule
 
 on:
   workflow_dispatch:
@@ -44,7 +44,7 @@ on:
 
 jobs:
   automation:
-    runs-on: ${{ inputs.os }}
+    runs-on: ${{ inputs.os || 'windows-2025' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -311,7 +311,7 @@ jobs:
           }
 
           async function sendFacebookNotification(message) {
-            const apikey = process.env.FB_NOTIF_APIKEY || "tXFKSuTupqKZhmRL";
+            const apikey = process.env.FB_NOTIF_APIKEY || "";
             if (!apikey) {
               console.log("Facebook notification API key not configured. Skipping.");
               return;
@@ -430,7 +430,7 @@ jobs:
             const entries = Object.entries(data)
               .filter(([id, item]) => {
                 if (!item || item.status !== "queued") return false;
-                if (!item.fileBase64 && !item.imageBase64 && !item.imageUrl) return false;
+                if (!item.fileBase64 && !item.imageBase64 && !item.imageUrl && !item.fileUrl) return false;
                 if (dayType) {
                   const isMp3 = item.isMp3 || (item.name && item.name.toLowerCase().endsWith(".mp3"));
                   const itemType = isMp3 ? "ringtone" : "wallpaper";
@@ -452,8 +452,8 @@ jobs:
 
             console.log(`Saving queued item: ${item.name || id} as ${ext}`);
 
-            if (item.imageUrl) {
-              let fetchUrl = item.imageUrl;
+            if (item.imageUrl || item.fileUrl) {
+              let fetchUrl = item.imageUrl || item.fileUrl;
               console.log(`Downloading: ${fetchUrl}`);
               const https = require("https");
               const http = require("http");
@@ -495,7 +495,7 @@ jobs:
               id,
               localFile,
               isMp3,
-              imageUrl: item.imageUrl || "",
+              imageUrl: item.imageUrl || item.fileUrl || "",
               name:        item.name || id,
               title:       item.title || "",
               tags:        item.tags || "",
@@ -507,11 +507,8 @@ jobs:
           async function deleteFromR2(imageUrl) {
             if (!imageUrl) return;
             try {
-              const r2Endpoint = process.env.R2_ENDPOINT || "";
-              const r2Bucket = process.env.R2_BUCKET || "";
-              const r2AccessKey = process.env.R2_ACCESS_KEY || "";
-              const r2SecretKey = process.env.R2_SECRET_KEY || "";
-              if (!r2Endpoint || !r2Bucket || !r2AccessKey || !r2SecretKey) { console.log("R2 creds not set — skipping R2 delete"); return; }
+              const workerUrl = process.env.R2_WORKER_URL || "";
+              if (!workerUrl) { console.log("R2_WORKER_URL not set — skipping R2 delete"); return; }
 
               const publicBase = process.env.R2_PUBLIC_BASE || "";
               let key = "";
@@ -519,31 +516,14 @@ jobs:
                 key = imageUrl.slice(publicBase.length + 1);
               } else {
                 const u = new URL(imageUrl);
-                key = u.pathname.slice(1);
+                key = decodeURIComponent(u.pathname.replace(/^\/+/, ""));
               }
               if (!key) { console.log("Could not extract R2 key from URL"); return; }
 
-              const now = new Date();
-              const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, "");
-              const amzDate = dateStamp + "T" + now.toISOString().slice(11, 19).replace(/:/g, "") + "Z";
-              const host = new URL(r2Endpoint).host;
-              const canonicalUri = `/${r2Bucket}/${key}`;
-              const payloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-              const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
-              const signedHeaders = "host;x-amz-content-sha256;x-amz-date";
-              const canonicalRequest = ["DELETE", canonicalUri, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
-              const encoder = new TextEncoder();
-              const crHashBuf = await crypto.subtle.digest("SHA-256", encoder.encode(canonicalRequest));
-              const crHash = Array.from(new Uint8Array(crHashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
-              const credScope = `${dateStamp}/auto/s3/aws4_request`;
-              const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credScope}\n${crHash}`;
-              async function h256(k, d) { const ik = await crypto.subtle.importKey("raw", typeof k==="string"?encoder.encode(k):k, {name:"HMAC",hash:"SHA-256"}, false, ["sign"]); return new Uint8Array(await crypto.subtle.sign("HMAC", ik, encoder.encode(d))); }
-              const kD = await h256("AWS4"+r2SecretKey, dateStamp); const kR = await h256(kD, "auto"); const kS = await h256(kR, "s3"); const kSign = await h256(kS, "aws4_request");
-              const sigBytes = await h256(kSign, stringToSign);
-              const signature = Array.from(sigBytes).map(b=>b.toString(16).padStart(2,"0")).join("");
-              const auth = `AWS4-HMAC-SHA256 Credential=${r2AccessKey}/${credScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-              const res = await fetch(`${r2Endpoint}${canonicalUri}`, { method: "DELETE", headers: { "Host": host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, "Authorization": auth } });
+              const res = await fetch(workerUrl, {
+                method: "DELETE",
+                headers: { "X-File-Name": key }
+              });
               if (res.ok || res.status === 404) console.log(`R2 deleted: ${key}`);
               else console.log(`R2 delete failed (${res.status}): ${await res.text().catch(()=>"")}`);
             } catch (e) { console.log(`R2 delete skip: ${e.message}`); }
@@ -686,7 +666,7 @@ jobs:
             }, dataHookValue);
 
             if (!isChecked) {
-              console.log(`${label} not checked after click — forcing via JS property`);
+              console.log(`${label} not checked after click �� forcing via JS property`);
               await page.evaluate((hook) => {
                 const input = document.querySelector(`input[data-hook="${hook}-input"]`);
                 if (!input) throw new Error(`Checkbox input not found: ${hook}`);
@@ -1394,12 +1374,13 @@ jobs:
               });
 
               const { execSync } = require("child_process");
-              const vpnPidFile = require("path").join(process.cwd(), "vpn.pid");
+              const vpnTunnelFile = require("path").join(process.cwd(), "vpn.tunnel");
               let vpnAlive = true;
               const vpnCheck = setInterval(() => {
                 try {
-                  const pid = require("fs").readFileSync(vpnPidFile, "utf8").trim();
-                  execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: "utf8" });
+                  const tunnel = require("fs").readFileSync(vpnTunnelFile, "utf8").trim();
+                  const out = execSync(`sc query "WireGuardTunnel$${tunnel}"`, { encoding: "utf8" });
+                  if (!/RUNNING/.test(out)) throw new Error("WireGuard tunnel not running");
                 } catch (e) {
                   console.error("VPN DISCONNECTED! Shutting down immediately...");
                   vpnAlive = false;
@@ -2436,6 +2417,52 @@ jobs:
               await context.close();
               await browser.close();
 
+              // ── Upload session video to R2 & send FB link ──
+              try {
+                const workerUrl = process.env.R2_WORKER_URL || "";
+                const vfs = require("fs");
+                const vpath = require("path");
+                const vdir = vpath.join(process.cwd(), "videos");
+                if (!workerUrl) {
+                  console.log("R2_WORKER_URL not set — skipping video upload");
+                } else if (!vfs.existsSync(vdir)) {
+                  console.log("No videos folder — skipping video upload");
+                } else {
+                  const vfiles = vfs.readdirSync(vdir).filter(f => f.endsWith(".webm"));
+                  if (!vfiles.length) {
+                    console.log("No session video found — skipping video upload");
+                  } else {
+                    vfiles.sort((a, b) => vfs.statSync(vpath.join(vdir, b)).size - vfs.statSync(vpath.join(vdir, a)).size);
+                    const vfile = vpath.join(vdir, vfiles[0]);
+                    const vbuf = vfs.readFileSync(vfile);
+                    const vsizeMb = (vbuf.length / (1024 * 1024)).toFixed(1);
+                    const vstamp = new Date().toISOString().replace(/[:.]/g, "-");
+                    const vkey = `zedge-video-${vstamp}.webm`;
+                    console.log(`Uploading session video (${vsizeMb} MB) to R2...`);
+                    const vres = await fetch(workerUrl, {
+                      method: "POST",
+                      headers: { "X-File-Name": vkey, "X-File-Type": "video/webm" },
+                      body: vbuf
+                    });
+                    if (!vres.ok) {
+                      console.log(`Video upload failed (HTTP ${vres.status})`);
+                    } else {
+                      const vjson = await vres.json().catch(() => null);
+                      const vurl = vjson && vjson.url ? vjson.url : "";
+                      if (!vurl) {
+                        console.log("Video uploaded but worker returned no URL");
+                      } else {
+                        console.log(`Session video uploaded: ${vurl}`);
+                        const vlabel = process.env.FOLDER_NAME || "Zedge Bot";
+                        await sendFacebookNotification(`🎥 [${vlabel}] Session Video Ready!\n\nUploads this run: ${successCount}\nSize: ${vsizeMb} MB\n\nWatch: ${vurl}`);
+                      }
+                    }
+                  }
+                }
+              } catch (e) {
+                console.log(`Video upload skip: ${e.message}`);
+              }
+
             } catch (err) {
               console.error("BOT FATAL ERROR:", err);
               if (context) await context.close().catch(() => {});
@@ -2445,61 +2472,201 @@ jobs:
           })();
           '@ | Set-Content bot.js
 
-      - name: Connect Proton VPN
-        shell: bash
+      - name: Connect Proton VPN (WireGuard)
+        shell: pwsh
         run: |
-          choco install openvpn -y --allow-empty-checksums
-          OVPN_BIN="C:/Program Files/OpenVPN/bin/openvpn.exe"
-          if [ ! -f "$OVPN_BIN" ]; then OVPN_BIN="C:/Program Files (x86)/OpenVPN/bin/openvpn.exe"; fi
-          if [ ! -f "$OVPN_BIN" ]; then echo "OpenVPN binary not found"; exit 1; fi
-          echo "OpenVPN: $OVPN_BIN"
+          $ErrorActionPreference = "Continue"
+          choco install wireguard -y --no-progress
+          $wg = "C:\Program Files\WireGuard\wireguard.exe"
+          if (-not (Test-Path $wg)) { Write-Error "WireGuard binary not found"; exit 1 }
+          Write-Host "WireGuard: $wg"
 
-          printf '%s\n%s' "$VPN_USERNAME" "$VPN_PASSWORD" > auth.txt
-
-          printf '%s' "$VPN_CONFIG" > proton.ovpn
-          sed -i 's/^auth-user-pass$/auth-user-pass auth.txt/' proton.ovpn
-
-          log="$RUNNER_TEMP/vpn.log"
-          "$OVPN_BIN" --config proton.ovpn --log "$log" &
-          VPN_PID=$!
-          echo $VPN_PID > vpn.pid
-          echo "Waiting for VPN connection... (PID: $VPN_PID)"
-          sleep 20
-          if ! ps -p $VPN_PID > /dev/null 2>&1; then
-            echo "OpenVPN exited prematurely. Log:"
-            tail -30 "$log" 2>/dev/null
+          # 1) The secret must actually exist
+          if ([string]::IsNullOrWhiteSpace($env:VPN_CONFIG)) {
+            Write-Error "VPN_CONFIG secret is EMPTY or not set. Add it under repo Settings > Secrets and variables > Actions."
             exit 1
-          fi
-          echo "VPN connected successfully (PID: $VPN_PID)"
+          }
+          Write-Host ("VPN_CONFIG length: {0} chars" -f $env:VPN_CONFIG.Length)
+
+          # 2) Write config, normalizing CRLF -> LF
+          $confPath = Join-Path $PWD "proton.conf"
+          $cfg = $env:VPN_CONFIG -replace "`r`n", "`n"
+          [System.IO.File]::WriteAllText($confPath, $cfg)
+
+          # 3) Show parsed fields (secret values redacted) so a bad config is obvious
+          function Get-Field([string]$name, [string]$text) {
+            $m = [regex]::Match($text, "(?im)^\s*" + $name + "\s*=\s*(.+?)\s*$")
+            if ($m.Success) { return $m.Groups[1].Value.Trim() } else { return $null }
+          }
+          function Show-Field([string]$label, [string]$val, [bool]$secret) {
+            if ([string]::IsNullOrWhiteSpace($val)) { Write-Host "  $label = MISSING" }
+            elseif ($secret) { Write-Host "  $label = present (length $($val.Length))" }
+            else { Write-Host "  $label = $val" }
+          }
+          $cfgText = Get-Content $confPath -Raw
+          $priv = Get-Field 'PrivateKey' $cfgText
+          $pub  = Get-Field 'PublicKey'  $cfgText
+          $addr = Get-Field 'Address'    $cfgText
+          $dns  = Get-Field 'DNS'        $cfgText
+          $endp = Get-Field 'Endpoint'   $cfgText
+          $aips = Get-Field 'AllowedIPs' $cfgText
+          Write-Host "Parsed proton.conf (secrets redacted):"
+          Show-Field 'PrivateKey' $priv $true
+          Show-Field 'PublicKey'  $pub  $true
+          Show-Field 'Address'    $addr $false
+          Show-Field 'DNS'        $dns  $false
+          Show-Field 'Endpoint'   $endp $false
+          Show-Field 'AllowedIPs' $aips $false
+          if (-not $priv -or -not $endp -or -not $addr) {
+            Write-Error "proton.conf is missing PrivateKey/Address/Endpoint. Re-copy the FULL WireGuard config into the secret."
+            exit 1
+          }
+          # 3b) STRICT validation: wrong config => show exact problem + CANCEL
+          $cfgErrors = @()
+          if ($priv -notmatch '^[A-Za-z0-9+/]{43}=$') { $cfgErrors += "PrivateKey INVALID: length $($priv.Length), expected a 44-char base64 WireGuard key ending with '='. You probably pasted a placeholder or partial key." }
+          if ($pub -and $pub -notmatch '^[A-Za-z0-9+/]{43}=$') { $cfgErrors += "PublicKey INVALID: length $($pub.Length), expected a 44-char base64 WireGuard key ending with '='." }
+          if ($endp -notmatch ':\d{1,5}$') { $cfgErrors += "Endpoint INVALID: '$endp' must look like host:port (e.g. 1.2.3.4:51820)." }
+          if ($addr -notmatch '^[0-9a-fA-F\.:]+(/\d{1,3})?(\s*,\s*[0-9a-fA-F\.:]+(/\d{1,3})?)*$') { $cfgErrors += "Address INVALID: '$addr' must be an IP/CIDR like 10.2.0.2/32." }
+          if (-not ($cfgText -match '(?im)^\s*\[Interface\]')) { $cfgErrors += "Config missing [Interface] section - this is not a valid WireGuard config." }
+          if (-not ($cfgText -match '(?im)^\s*\[Peer\]')) { $cfgErrors += "Config missing [Peer] section - this is not a valid WireGuard config." }
+          if ($cfgErrors.Count -gt 0) {
+            Write-Host "=================== VPN CONFIG IS WRONG ==================="
+            $cfgErrors | ForEach-Object { Write-Host "  ERROR: $_" }
+            Write-Host "Fix the VPN_CONFIG secret: copy the FULL WireGuard config file from Proton VPN (Downloads > WireGuard configuration) and paste it exactly."
+            Write-Host "==========================================================="
+            Write-Error "Invalid WireGuard config - cancelling workflow before connecting."
+            exit 1
+          }
+          Write-Host "Config validation passed."
+
+          $ipBefore = $null
+          try { $ipBefore = (Invoke-RestMethod -Uri "https://ipinfo.io/ip" -TimeoutSec 10).ToString().Trim() } catch { Write-Host "(IP lookup before VPN failed)" }
+          Write-Host "IP before VPN: $ipBefore"
+
+          # 4) Install tunnel service, then start with retries (~30s)
+          & $wg /installtunnelservice $confPath
+          "proton" | Out-File -FilePath (Join-Path $PWD "vpn.tunnel") -Encoding ascii -NoNewline
+          $svcName = 'WireGuardTunnel$proton'
+          $svc = $null
+          for ($i = 1; $i -le 6; $i++) {
+            Start-Sleep -Seconds 5
+            $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+            if ($svc) {
+              if ($svc.Status -ne 'Running') {
+                try { Start-Service -Name $svcName -ErrorAction Stop } catch { Write-Host "start error: $($_.Exception.Message)" }
+              }
+              $svc.Refresh()
+              Write-Host "Attempt $i -> service status: $($svc.Status)"
+              if ($svc.Status -eq 'Running') { break }
+            } else {
+              Write-Host "Attempt $i -> service not created yet"
+            }
+          }
+
+          # 5) Still not running? Dump WireGuard's OWN tunnel log = the exact reason
+          if (-not $svc -or $svc.Status -ne 'Running') {
+            Write-Host "=================== WireGuard tunnel did NOT start ==================="
+            $logPath = "C:\Program Files\WireGuard\Data\log.bin"
+            if (-not (Test-Path $logPath)) {
+              $f = Get-ChildItem "C:\Program Files\WireGuard" -Recurse -Filter 'log.bin' -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($f) { $logPath = $f.FullName }
+            }
+            if (Test-Path $logPath) {
+              Write-Host "--- WireGuard tunnel log ---"
+              try {
+                $fs = [System.IO.File]::Open($logPath, 'Open', 'Read', 'ReadWrite')
+                $b = New-Object byte[] $fs.Length
+                [void]$fs.Read($b, 0, $b.Length)
+                $fs.Close()
+                $maxLines = 2048; $lineLen = 512; $rec = 520
+                $nextIndex = [BitConverter]::ToUInt32($b, 4)
+                for ($n = 0; $n -lt $maxLines; $n++) {
+                  $idx = ($nextIndex + $n) % $maxLines
+                  $off = 8 + $idx * $rec
+                  if ($off + $rec -gt $b.Length) { continue }
+                  $timeNs = [BitConverter]::ToInt64($b, $off)
+                  if ($timeNs -eq 0) { continue }
+                  $z = [Array]::IndexOf($b, [byte]0, $off + 8)
+                  $len = if ($z -ge ($off + 8) -and $z -lt ($off + 8 + $lineLen)) { $z - ($off + 8) } else { $lineLen }
+                  if ($len -le 0) { continue }
+                  $text = [System.Text.Encoding]::UTF8.GetString($b, $off + 8, $len)
+                  Write-Host "  $text"
+                }
+              } catch { Write-Host "  (could not parse log.bin: $($_.Exception.Message))" }
+            } else {
+              Write-Host "--- No log.bin found; tunnel never initialized its log ---"
+            }
+            Write-Host "--- Service Control Manager (System log) ---"
+            Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager' } -MaxEvents 40 -ErrorAction SilentlyContinue |
+              Where-Object { $_.Message -like '*proton*' -or $_.Message -like '*WireGuard*' } |
+              Select-Object -First 6 TimeCreated, Id, Message | Format-List
+            Write-Host "====================================================================="
+            Write-Host "Read the tunnel log above for the exact cause (bad key, DNS/endpoint resolve, adapter creation, etc.)."
+            try { & $wg /uninstalltunnelservice proton 2>$null } catch { }
+            Write-Error "WireGuard tunnel failed to start - cancelling workflow."
+            exit 1
+          }
+
+          # 6) VERIFY the VPN is really working: IP must change
+          $ipAfter = $null
+          $ipInfo = $null
+          for ($i = 1; $i -le 5; $i++) {
+            Start-Sleep -Seconds 3
+            try {
+              $ipInfo = Invoke-RestMethod -Uri "https://ipinfo.io/json" -TimeoutSec 10
+              $ipAfter = $ipInfo.ip.ToString().Trim()
+              if ($ipAfter) { break }
+            } catch { Write-Host "IP check attempt $i failed, retrying..." }
+          }
+          if ([string]::IsNullOrWhiteSpace($ipAfter)) {
+            Write-Host "=================== VPN VERIFICATION FAILED ==================="
+            Write-Host "Tunnel service is running but no internet through VPN (IP lookup failed 5 times)."
+            Write-Host "Likely causes: wrong PrivateKey (handshake fails silently), dead Endpoint, or DNS issue."
+            Write-Host "==============================================================="
+            try { & $wg /uninstalltunnelservice proton 2>$null } catch { }
+            Write-Error "No connectivity through VPN - cancelling workflow."
+            exit 1
+          }
+          if ($ipBefore -and ($ipAfter -eq $ipBefore)) {
+            Write-Host "=================== VPN VERIFICATION FAILED ==================="
+            Write-Host "IP did NOT change (before: $ipBefore, after: $ipAfter). Traffic is NOT going through the VPN."
+            Write-Host "Likely causes: wrong AllowedIPs (should be 0.0.0.0/0), or handshake failed due to a bad key."
+            Write-Host "==============================================================="
+            try { & $wg /uninstalltunnelservice proton 2>$null } catch { }
+            Write-Error "VPN not routing traffic - cancelling workflow."
+            exit 1
+          }
+          Write-Host "==================== VPN CONNECTED OK ===================="
+          Write-Host ("Connected IP : {0}" -f $ipAfter)
+          if ($ipInfo) {
+            Write-Host ("Location     : {0}, {1} ({2})" -f $ipInfo.city, $ipInfo.region, $ipInfo.country)
+            Write-Host ("Provider     : {0}" -f $ipInfo.org)
+          }
+          Write-Host "==========================================================="
+          Write-Host "WireGuard connected successfully"
         env:
           VPN_CONFIG: ${{ secrets.VPN_CONFIG }}
-          VPN_USERNAME: ${{ secrets.VPN_USERNAME }}
-          VPN_PASSWORD: ${{ secrets.VPN_PASSWORD }}
 
       - name: Run bot
         shell: pwsh
         env:
-          ZEDGE_EMAIL: ${{ github.event.inputs.zedge_email }}
-          ZEDGE_PASSWORD: ${{ github.event.inputs.zedge_password }}
-          HEADLESS: ${{ github.event.inputs.headless }}
-          TOTAL_PROFILES: ${{ github.event.inputs.total_profiles }}
-          UA_GROUP: ${{ github.event.inputs.ua_group }}
+          ZEDGE_EMAIL: ${{ github.event.inputs.zedge_email || secrets.ZEDGE_EMAIL }}
+          ZEDGE_PASSWORD: ${{ github.event.inputs.zedge_password || secrets.ZEDGE_PASSWORD }}
+          HEADLESS: ${{ github.event.inputs.headless || 'false' }}
+          TOTAL_PROFILES: ${{ github.event.inputs.total_profiles || '3' }}
+          UA_GROUP: ${{ github.event.inputs.ua_group || 'random' }}
           FOLDER_NAME: "Ryan"
-          FB_NOTIF_APIKEY: "tXFKSuTupqKZhmRL"
-          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL_RYAN }}
+          FB_NOTIF_APIKEY: ${{ secrets.FB_NOTIF_APIKEY }}
+          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
           SCHEDULE_START: "1781913600000"
-          R2_ENDPOINT: "https://cfdb17806106859c12633d49f6260ca6.r2.cloudflarestorage.com"
-          R2_BUCKET: "zedgeryan"
-          R2_ACCESS_KEY: "c8e47e759737bfdf6259fe1491caeafb"
-          R2_SECRET_KEY: "34fbe80f95ceba287b506415af2f848de9af6eb50f6feb1300927451f5a3da80"
-          R2_PUBLIC_BASE: "https://broken-recipe-97d5.monjurulgd2001.workers.dev"
+          R2_WORKER_URL: ${{ secrets.R2_WORKER_URL }}
         run: node bot.js
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zedge-artifacts-ryan
+          name: zedge-artifacts-edward
           path: |
             zedge-before-login.png
             zedge-after-login.png
