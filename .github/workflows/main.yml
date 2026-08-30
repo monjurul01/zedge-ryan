@@ -449,17 +449,26 @@ jobs:
             }
 
             const ZEDGE_DAILY_LIMIT = 3;
-            if (state.totalUploadsToday >= ZEDGE_DAILY_LIMIT) {
+
+            const queueData = await firebaseGet("wallpaperQueue") || {};
+            const hasEmergency = Object.values(queueData).some(item => item && item.status === "queued" && item.isEmergency === true);
+
+            if (state.totalUploadsToday >= ZEDGE_DAILY_LIMIT && !hasEmergency) {
               console.log(`🛑 Zedge daily limit of ${ZEDGE_DAILY_LIMIT} uploads reached. Exiting safely.`);
               process.exit(0); 
             }
 
             const perProfileLimit = Math.ceil(ZEDGE_DAILY_LIMIT / totalProfilesCount);
-            const nextProfileIndex = getNextAvailableProfile(state.lastUsedProfileIndex, state.profileUploadCounts, totalProfilesCount, perProfileLimit);
+            let nextProfileIndex = getNextAvailableProfile(state.lastUsedProfileIndex, state.profileUploadCounts, totalProfilesCount, perProfileLimit);
 
             if (nextProfileIndex === -1) {
-              console.log("🛑 All profiles have reached their daily upload limit. Exiting safely.");
-              process.exit(0);
+              if (hasEmergency) {
+                console.log("Emergency item found! Bypassing profile limits.");
+                nextProfileIndex = 0;
+              } else {
+                console.log("🛑 All profiles have reached their daily upload limit. Exiting safely.");
+                process.exit(0);
+              }
             }
 
             const countsDisplay = Object.entries(state.profileUploadCounts).map(([k,v]) => `P${k}:${v}`).join(", ") || "none";
@@ -519,6 +528,9 @@ jobs:
               .filter(([id, item]) => {
                 if (!item || item.status !== "queued") return false;
                 if (!item.fileBase64 && !item.imageBase64 && !item.imageUrl && !item.fileUrl) return false;
+                
+                if (item.isEmergency === true) return true; // BYPASS SCHEDULE
+
                 if (dayType) {
                   const isMp3 = item.isMp3 || (item.name && item.name.toLowerCase().endsWith(".mp3"));
                   const itemType = isMp3 ? "ringtone" : "wallpaper";
@@ -526,7 +538,12 @@ jobs:
                 }
                 return true;
               })
-              .sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
+              .sort((a, b) => {
+                const aEm = a[1].isEmergency ? 1 : 0;
+                const bEm = b[1].isEmergency ? 1 : 0;
+                if (aEm !== bEm) return bEm - aEm; // Emergency items first
+                return (a[1].createdAt || 0) - (b[1].createdAt || 0);
+              });
 
             if (!entries.length) throw new Error(`No queued ${dayType || "item"} found`);
 
@@ -574,6 +591,26 @@ jobs:
               fs.writeFileSync(localFile, Buffer.from(base64, "base64"));
             }
 
+            // ── 24-Hour wallpaper set: download all four time-of-day frames ──
+            const is24h = !!item.is24h && item.fileUrls && typeof item.fileUrls === "object";
+            const localFiles = [];
+            const allUrls = [];
+            if (is24h) {
+              const slotOrder = ["morning", "afternoon", "evening", "night"];
+              for (const slot of slotOrder) {
+                const slotUrl = item.fileUrls[slot];
+                if (!slotUrl) throw new Error(`24H item is missing the ${slot} image`);
+                const slotFile = path.join(localDir, `${id}_${slot}.jpg`);
+                console.log(`Downloading 24H ${slot} frame: ${slotUrl}`);
+                const slotRes = await fetch(slotUrl);
+                if (!slotRes.ok) throw new Error(`24H ${slot} frame download failed: HTTP ${slotRes.status}`);
+                fs.writeFileSync(slotFile, Buffer.from(await slotRes.arrayBuffer()));
+                localFiles.push(slotFile);
+                allUrls.push(slotUrl);
+              }
+              console.log(`24H set ready: ${localFiles.length} frames downloaded`);
+            }
+
             await firebasePatch(`${queuePath}/${id}`, {
               status: "processing",
               processingAt: Date.now()
@@ -583,6 +620,9 @@ jobs:
               id,
               localFile,
               isMp3,
+              is24h,
+              localFiles,
+              allUrls,
               imageUrl: item.imageUrl || item.fileUrl || "",
               name:        item.name || id,
               title:       item.title || "",
@@ -1471,7 +1511,13 @@ jobs:
               const ZEDGE_DAILY_LIMIT = 3;
               const UPLOADS_PER_RUN = 1;
               const profileStateData = await getProfileState(TOTAL_PROFILES);
-              const remainingUploads = Math.min(ZEDGE_DAILY_LIMIT - profileStateData.state.totalUploadsToday, UPLOADS_PER_RUN);
+              let remainingUploads = Math.min(ZEDGE_DAILY_LIMIT - profileStateData.state.totalUploadsToday, UPLOADS_PER_RUN);
+              
+              const queueDataForEmergencyCheck = await firebaseGet("wallpaperQueue") || {};
+              const hasEmergency = Object.values(queueDataForEmergencyCheck).some(item => item && item.status === "queued" && item.isEmergency === true);
+              if (hasEmergency) {
+                remainingUploads = 1;
+              }
               let currentProfileIndex = profileStateData.nextProfileIndex;
               const perProfileLimit   = profileStateData.perProfileLimit;
               let currentState = profileStateData.state;
@@ -2482,20 +2528,67 @@ jobs:
                   await page.waitForTimeout(1000);
                   await autoKillConsent(page);
 
-                  await safeClick(
-                    page.locator("svg.fa-plus").first(),
-                    "Upload plus icon"
-                  );
+                  if (queueItem.is24h) {
+                    await safeClick(
+                      page.locator("svg.fa-ellipsis-h, svg[data-icon='ellipsis-h']").first(),
+                      "Upload ellipsis icon (24H)"
+                    );
+                  } else {
+                    await safeClick(
+                      page.locator("svg.fa-plus").first(),
+                      "Upload plus icon"
+                    );
+                  }
 
                   await page.waitForTimeout(800);
                   await autoKillConsent(page);
                   await page.screenshot({ path: `zedge-upload-menu-${uploadNum}.png`, fullPage: false });
 
-                  if (!queueItem.isMp3) {
-                    validateWallpaperFile(queueItem.localFile);
+                  if (queueItem.is24h) {
+                    console.log("Selecting 24-Hour Wallpaper upload type from menu...");
+                    let clicked24 = false;
+                    // Confirmed from Zedge's live upload menu DOM:
+                    // <div class="sc-hAZoDl iMIILv"><a class="sc-bhVIhj gabylK">24H Wallpaper</a></div>
+                    // (sc-* classes are auto-generated styled-components hashes that change
+                    // on each Zedge deploy, so match by the stable link text instead.)
+                    const menuSelectors24 = [
+                      'text="24H Wallpaper"',
+                      'text="24H"',
+                      'text="Wallpaper that changes based on time"',
+                      'button:has-text("24H Wallpaper")',
+                      'div[role="button"]:has-text("24H Wallpaper")'
+                    ];
+                    for (const sel24 of menuSelectors24) {
+                      try {
+                        // Playwright's 'text=' selector automatically targets the deepest matching element.
+                        // For xpath/css that might match parent containers, we should use .last() to get the deepest node.
+                        const el24 = sel24.startsWith('text=') ? page.locator(sel24).first() : page.locator(sel24).last();
+                        if (await el24.isVisible({ timeout: 4000 })) {
+                          // force: true helps if there's a slight overlay or animation issue
+                          await el24.click({ force: true });
+                          console.log(`Clicked 24-Hour option via: ${sel24}`);
+                          clicked24 = true;
+                          break;
+                        }
+                      } catch (e) { }
+                    }
+                    if (!clicked24) {
+                      console.log("⚠️ 24-Hour menu option not found — continuing, the dialog may already be open. Check zedge-24h-menu screenshot.");
+                    }
+                    await page.waitForTimeout(800);
+                    await autoKillConsent(page);
+                    await page.screenshot({ path: `zedge-24h-menu-${uploadNum}.png`, fullPage: false }).catch(() => {});
                   }
 
-                  await uploadWallpaperInDialog(page, queueItem.localFile);
+                  if (!queueItem.isMp3) {
+                    if (queueItem.is24h && queueItem.localFiles && queueItem.localFiles.length === 4) {
+                      queueItem.localFiles.forEach(validateWallpaperFile);
+                    } else {
+                      validateWallpaperFile(queueItem.localFile);
+                    }
+                  }
+
+                  await uploadWallpaperInDialog(page, queueItem.is24h ? queueItem.localFiles : queueItem.localFile);
 
                   await fillMetaDialog(page, {
                     title:       queueItem.title,
@@ -2510,7 +2603,12 @@ jobs:
 
                   await page.screenshot({ path: `zedge-final-${uploadNum}.png`, fullPage: true });
 
-                  const uploadedType = queueItem.isMp3 ? "ringtone" : "wallpaper";
+                  const uploadedType = queueItem.is24h ? "24h-wallpaper" : (queueItem.isMp3 ? "ringtone" : "wallpaper");
+                  if (queueItem.is24h && Array.isArray(queueItem.allUrls)) {
+                    for (const extraUrl of queueItem.allUrls) {
+                      if (extraUrl && extraUrl !== queueItem.imageUrl) await deleteFromR2(extraUrl).catch(() => {});
+                    }
+                  }
                   await markWallpaperDoneAndDelete(queueItem.id, queueItem.name, uploadedType, queueItem.imageUrl);
                   await updateProfileStateAfterUpload(currentState, currentProfileIndex);
 
@@ -2858,6 +2956,7 @@ jobs:
             zedge-before-login.png
             zedge-after-login.png
             zedge-upload-menu-*.png
+            zedge-24h-menu-*.png
             zedge-after-type-click-*.png
             zedge-dialog-error.png
             zedge-error-upload-*.png
