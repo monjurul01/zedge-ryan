@@ -2458,6 +2458,8 @@ jobs:
                 try { await autoKillConsent(page); } catch (e) {}
               }, 2000);
 
+              let sessionNotifications = [];
+
               for (let i = 0; i < remainingUploads; i++) {
                 let queueItem = null;
                 const uploadNum = i + 1;
@@ -2634,7 +2636,7 @@ jobs:
                     notifyMsg = `🚀 [${folderLabel}] Zedge Upload Success!\n\n📅 ${dayLabel}\n🕐 ${dhakaTime} (Dhaka)\n\nFile: ${queueItem.name}\nTitle: ${queueItem.title || "N/A"}\nCategory: ${queueItem.category || "N/A"}\nStatus: ${publishResult.statusName}\nProfile Index: ${currentProfileIndex}\n📊 Today: ${currentState.totalUploadsToday}/${ZEDGE_DAILY_LIMIT} uploads`;
                     console.log(`✅ Upload ${uploadNum} complete! Status: ${publishResult.statusName}. (${successCount} this run)`);
                   }
-                  await sendNotification(notifyMsg);
+                  sessionNotifications.push(notifyMsg);
 
                 } catch (uploadErr) {
                   console.error(`❌ Upload ${uploadNum} failed with a technical error: ${uploadErr.message}`);
@@ -2642,7 +2644,7 @@ jobs:
                     await markWallpaperFailed(queueItem.id, uploadErr.message).catch(() => {});
                   }
                   const failLabel = process.env.FOLDER_NAME || "Zedge Bot";
-                  await sendNotification(`❌ [${failLabel}] Zedge Upload Failed!\n\nFile: ${queueItem?.name || "unknown"}\nReason: ${String(uploadErr.message).slice(0, 300)}`).catch(() => {});
+                  sessionNotifications.push(`❌ [${failLabel}] Zedge Upload Failed!\n\nFile: ${queueItem?.name || "unknown"}\nReason: ${String(uploadErr.message).slice(0, 300)}`);
                   await page.screenshot({ path: `zedge-error-upload-${uploadNum}.png`, fullPage: true }).catch(() => {});
                   console.log("Continuing to next upload despite error...");
                 }
@@ -2666,26 +2668,20 @@ jobs:
               await context.close();
               await browser.close();
 
-              // ── Upload session video to R2 & send FB link ──
+              // ── Send session video to Telegram (and optionally R2) ──
+              let videoSuccessfullySent = false;
               try {
                 const workerUrl = process.env.R2_WORKER_URL || "";
                 const vfs = require("fs");
                 const vpath = require("path");
                 const vdir = vpath.join(process.cwd(), "videos");
-                if (!workerUrl) {
-                  console.log("R2_WORKER_URL not set — skipping video upload");
-                } else if (!vfs.existsSync(vdir)) {
-                  console.log("No videos folder — skipping video upload");
-                } else {
+                if (vfs.existsSync(vdir)) {
                   const vfiles = vfs.readdirSync(vdir).filter(f => f.endsWith(".webm"));
-                  if (!vfiles.length) {
-                    console.log("No session video found — skipping video upload");
-                  } else {
+                  if (vfiles.length) {
                     vfiles.sort((a, b) => vfs.statSync(vpath.join(vdir, b)).size - vfs.statSync(vpath.join(vdir, a)).size);
                     const vfile = vpath.join(vdir, vfiles[0]);
 
                     // Telegram sendVideo only reliably accepts MP4 — convert webm -> mp4 with ffmpeg
-                    // (ffmpeg is preinstalled on GitHub ubuntu runners)
                     let vsendFile = vfile;
                     let vext = ".webm";
                     let vmime = "video/webm";
@@ -2708,42 +2704,62 @@ jobs:
                     const vsizeMb = (vbuf.length / (1024 * 1024)).toFixed(1);
                     const vstamp = new Date().toISOString().replace(/[:.]/g, "-");
                     const vkey = `zedge-video-${vstamp}${vext}`;
-                    console.log(`Uploading session video (${vsizeMb} MB) to R2...`);
-                    const vres = await fetch(workerUrl, {
-                      method: "POST",
-                      headers: { "X-File-Name": vkey, "X-File-Type": vmime },
-                      body: vbuf
-                    });
-                    if (!vres.ok) {
-                      console.log(`Video upload failed (HTTP ${vres.status})`);
-                    } else {
-                      const vjson = await vres.json().catch(() => null);
-                      const vurl = vjson && vjson.url ? vjson.url : "";
-                      if (!vurl) {
-                        console.log("Video uploaded but worker returned no URL");
-                      } else {
-                        console.log(`Session video uploaded: ${vurl}`);
-                        const vlabel = process.env.FOLDER_NAME || "Zedge Bot";
-                        const vday = getDayTypeToday() === "ringtone" ? "🎵 Ringtone Day" : "🖼️ Wallpaper Day";
-                        // No link in the caption — only the actual MP4 video is sent
-                        const vcaption = `🎥 [${vlabel}] Session Video\n\n📅 ${vday}\nUploads this run: ${successCount}\nSize: ${vsizeMb} MB`;
-                        // Try sending the actual video file via Telegram (50 MB API limit, keep 45 MB safety margin)
-                        let videoSent = false;
-                        if (parseFloat(vsizeMb) <= 45) {
-                          videoSent = await sendTelegramVideo(vbuf, vkey, vcaption);
+                    
+                    let vurl = "";
+                    if (workerUrl) {
+                      console.log(`Uploading session video (${vsizeMb} MB) to R2...`);
+                      try {
+                        const vres = await fetch(workerUrl, {
+                          method: "POST",
+                          headers: { "X-File-Name": vkey, "X-File-Type": vmime },
+                          body: vbuf
+                        });
+                        if (vres.ok) {
+                          const vjson = await vres.json().catch(() => null);
+                          if (vjson && vjson.url) vurl = vjson.url;
+                          console.log(`Session video uploaded: ${vurl}`);
                         } else {
-                          console.log(`Video too large for Telegram (${vsizeMb} MB > 45 MB) — sending link instead`);
+                          console.log(`Video R2 upload failed (HTTP ${vres.status})`);
                         }
-                        // Last resort only: if the video file itself could not be sent, fall back to the link so the recording is not lost
-                        if (!videoSent) {
-                          await sendNotification(`${vcaption}\n\n(Video file could not be sent — watch here: ${vurl})`);
-                        }
+                      } catch (r2Err) {
+                        console.log(`Video R2 upload error: ${r2Err.message}`);
                       }
                     }
+
+                    const vlabel = process.env.FOLDER_NAME || "Zedge Bot";
+                    const vday = getDayTypeToday() === "ringtone" ? "🎵 Ringtone Day" : "🖼️ Wallpaper Day";
+                    
+                    let vcaption = sessionNotifications.length > 0 
+                      ? sessionNotifications.join("\\n\\n") + `\\n\\n🎥 Size: ${vsizeMb} MB` 
+                      : `🎥 [${vlabel}] Session Video\\n\\n📅 ${vday}\\nUploads this run: ${successCount}\\nSize: ${vsizeMb} MB`;
+                    
+                    if (vcaption.length > 1000) {
+                      vcaption = vcaption.substring(0, 1000) + "...";
+                    }
+
+                    if (parseFloat(vsizeMb) <= 45) {
+                      videoSuccessfullySent = await sendTelegramVideo(vbuf, vkey, vcaption);
+                    } else {
+                      console.log(`Video too large for Telegram (${vsizeMb} MB > 45 MB) — sending link instead`);
+                    }
+
+                    if (!videoSuccessfullySent) {
+                      let fallbackMsg = vcaption;
+                      if (vurl) fallbackMsg += `\\n\\n(Video file could not be sent — watch here: ${vurl})`;
+                      else fallbackMsg += `\\n\\n(Video file could not be sent and R2 upload failed)`;
+                      await sendNotification(fallbackMsg);
+                      videoSuccessfullySent = true;
+                    }
+                  } else {
+                    console.log("No session video found.");
                   }
                 }
               } catch (e) {
                 console.log(`Video upload skip: ${e.message}`);
+              }
+
+              if (!videoSuccessfullySent && sessionNotifications.length > 0) {
+                await sendNotification(sessionNotifications.join("\\n\\n"));
               }
 
             } catch (err) {
